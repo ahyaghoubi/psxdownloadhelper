@@ -1,0 +1,35 @@
+# Default PS5 rule pack. Patterns from plan.md §6.4 and psdevwiki PS5 Online Connections.
+# Order matters: pkg-delta and pkg-sc are checked before the generic pkg-app
+# so chunks named ..._sc.pkg or ...-DP.pkg classify correctly.
+platform: ps5
+rules:
+  # *-DP.pkg cumulative delta packages (any prod.dl host).
+  - kind: pkg-delta
+    host_suffix: prod.dl.playstation.net
+    path_regex: -DP\.pkg$
+
+  # _sc.pkg PlayGo / info package — embeds param.json metadata.
+  - kind: pkg-sc
+    host_suffix: prod.dl.playstation.net
+    path_regex: _sc\.pkg$
+
+  # Per-chunk CRC checksum sidecar.
+  - kind: crc
+    host_suffix: prod.dl.playstation.net
+    path_regex: \.crc$
+
+  # Application PKG chunks under /app/pkg/. Excludes _sc.pkg and -DP.pkg because
+  # those have already matched above.
+  - kind: pkg-app
+    host_suffix: gst.prod.dl.playstation.net
+    path_regex: /app/pkg/.*\.pkg$
+
+  # Title-update XML entry point (typically HTTPS).
+  - kind: manifest-xml
+    host_suffix: sgst.prod.dl.playstation.net
+    path_regex: version\.xml$
+
+  # Update / app info JSON manifests.
+  - kind: manifest-json
+    host_suffix: prod.dl.playstation.net
+    path_regex: /app/info/.*\.json$

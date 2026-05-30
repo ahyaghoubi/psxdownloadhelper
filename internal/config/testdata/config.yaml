@@ -1,0 +1,30 @@
+proxy:
+  listen: "0.0.0.0:8080"
+admin:
+  listen: "127.0.0.1:8081"
+  auto_open: false
+library:
+  dir: "~/Downloads/psxdh"
+  layout: "basename"
+  watch: true
+  stable_settle_ms: 2000
+  ignore_suffixes: [".part", ".fdmdownload", ".tmp", ".crdownload"]
+match:
+  ps4: true
+  ps5: true
+  rules_dir: ""
+capture:
+  log_ignored: false
+  export_formats: ["txt", "fdm", "aria2"]
+  prefetch_sc_metadata: false
+handoff:
+  fdm:
+    enabled: true
+    fdm_binary: ""
+    fallback_to_clipboard: true
+forward:
+  mode: "auto"
+  passthrough_https: true
+log:
+  level: "info"
+  json: false

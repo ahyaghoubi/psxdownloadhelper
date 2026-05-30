@@ -1,0 +1,41 @@
+# Binaries
+/psxdh
+/cmd/psxdh/psxdh
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test artefacts
+*.test
+*.out
+coverage.*
+
+# Go workspace
+go.work
+go.work.sum
+
+# Vendor
+/vendor/
+
+# Build / release artefacts
+/dist/
+/bin/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Phase 0 throwaway proxy-stack spikes
+/spike/
+
+# Local overrides + actual library payloads
+/config.local.yaml
+/library/

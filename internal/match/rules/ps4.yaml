@@ -1,0 +1,30 @@
+# Default PS4 rule pack. Patterns from plan.md §6.4 and psdevwiki PS4 Online Connections.
+# Order matters: first match wins, so the more specific delta rule must precede
+# the generic patch/base rules.
+platform: ps4
+rules:
+  # *-DP.pkg cumulative delta packages must classify as pkg-delta even when
+  # they live under /ppkgo/ — check this before pkg-patch.
+  - kind: pkg-delta
+    host_suffix: gs2.ww.prod.dl.playstation.net
+    path_regex: -DP\.pkg$
+
+  # Base game chunks under /appkgo/.
+  - kind: pkg-base
+    host_suffix: gs2.ww.prod.dl.playstation.net
+    path_regex: /appkgo/.*\.pkg$
+
+  # Patch chunks under /ppkgo/.
+  - kind: pkg-patch
+    host_suffix: gs2.ww.prod.dl.playstation.net
+    path_regex: /ppkgo/.*\.pkg$
+
+  # Manifest JSON files under either tree.
+  - kind: manifest-json
+    host_suffix: gs2.ww.prod.dl.playstation.net
+    path_regex: /(appkgo|ppkgo)/.*\.json$
+
+  # Secured manifest variant; same shape, different host.
+  - kind: manifest-json
+    host_suffix: gs2-sec.ww.prod.dl.playstation.net
+    path_regex: /(appkgo|ppkgo)/.*\.json$
