@@ -17,6 +17,10 @@ capture:
   log_ignored: false
   export_formats: ["txt", "fdm", "aria2"]
   prefetch_sc_metadata: false
+  persist:
+    enabled: false
+    path: ""
+    fsync: false
 handoff:
   fdm:
     enabled: true
@@ -25,6 +29,37 @@ handoff:
 forward:
   mode: "auto"
   passthrough_https: true
+  retry:
+    max_attempts: 1
+    initial_backoff_ms: 200
+    max_backoff_ms: 5000
+    multiplier: 2.0
+    jitter: 0.2
+  partial_cache:
+    enabled: false
+    min_size_bytes: 1048576
+network:
+  dns:
+    mode: "system"
+    resolvers: []
+    timeout_ms: 1500
+    cache_ttl_s: 300
+    cache_max_entries: 4096
+  prefer_ipv4: false
+  dial_timeout_ms: 10000
+  upstream_proxy:
+    enabled: false
+    url: ""
+    only_for_hosts: []
+  circuit:
+    enabled: false
+    failure_threshold: 5
+    cooldown_ms: 30000
+  bandwidth:
+    forward_bps: 0
+    burst_bytes: 0
+verify:
+  crc: false
 log:
   level: "info"
   json: false

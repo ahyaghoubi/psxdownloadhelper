@@ -12,11 +12,15 @@ It is a clean-room MIT reimplementation in the spirit of the original
 with **first-class PS5 support** and a deliberate **no built-in downloader**
 design — the PC user keeps full control via FDM.
 
-> **Status: pre-implementation, Phase 1 complete.** The proxy, library
-> watcher, classifier, and CLI are wired up and tested. Hardware validation
+> **Status: Phase 1 + Phase 2.5 complete.** The proxy, library watcher,
+> classifier, CLI, and the full network-resilience stack (custom DNS,
+> retry, upstream proxy chain, partial cache, breaker, bandwidth, JSONL
+> persist, diagnostics) are wired up and tested. Hardware validation
 > against current PS5/PS4 firmware (Phase 0) and the dashboard / session
 > tracker (Phase 2) are still ahead. See [docs/roadmap.md](docs/roadmap.md)
-> for the full phase breakdown.
+> for the full phase breakdown and
+> [docs/network-resilience.md](docs/network-resilience.md) for the new
+> resilience knobs.
 
 ---
 
@@ -131,13 +135,62 @@ YAML file.
 
 ---
 
+## Surviving unstable networks
+
+If your ISP poisons DNS, your link drops mid-download, or you want to
+route only PSN traffic through a VPN, see
+[docs/network-resilience.md](docs/network-resilience.md). Two of the
+most useful recipes:
+
+```yaml
+# Iran / ISP-poisoned DNS: prefer DoH, fall back to UDP, then system.
+network:
+  dns:
+    mode: "doh+udp"
+    resolvers:
+      - "https://free.shecan.ir/dns-query"
+      - "178.22.122.100"
+      - "https://1.1.1.1/dns-query"
+forward:
+  retry:
+    max_attempts: 4
+    initial_backoff_ms: 250
+```
+
+```yaml
+# Send only CDN traffic through a local SOCKS5 VPN; rest dials direct.
+network:
+  upstream_proxy:
+    enabled: true
+    url: "socks5://127.0.0.1:1080"
+    only_for_hosts:
+      - "prod.dl.playstation.net"
+      - "ww.prod.dl.playstation.net"
+```
+
+Verify your choice before relying on it:
+
+```bash
+psxdh doctor                                    # all configured resolvers
+psxdh probe https://gst.prod.dl.playstation.net/.../x.pkg
+```
+
+---
+
 ## CLI
 
 | Command | Purpose |
 | --- | --- |
 | `psxdh proxy` | Run the HTTP proxy + library watcher. |
+| `psxdh doctor` | Probe configured DNS resolvers and PSN CDN reachability. |
+| `psxdh probe <url>` | Classify + resolve + HEAD/GET a single URL. |
 | `psxdh version` | Print the build version. |
 | `psxdh --help` | List subcommands and flags. |
+
+The `doctor` and `probe` commands are the diagnostic surface for the
+Phase 2.5 network-resilience stack — see
+[docs/network-resilience.md](docs/network-resilience.md). Both are
+read-only and safe to run while the proxy is serving.
 
 Future Phase 2 commands (planned, see [docs/roadmap.md](docs/roadmap.md)):
 `psxdh sessions`, `psxdh export-urls`, `psxdh watch`.
@@ -171,11 +224,34 @@ The test suite covers:
 - `internal/library` — index, watcher (partial-write debounce), resolver.
 - `internal/proxy` — absolute-URI forwarding, `Range` pass-through,
   `CONNECT` tunnel against an `httptest.NewTLSServer`, `auto` / `cache` /
-  `strict` modes, hop-by-hop header stripping, capture publication.
+  `strict` modes, hop-by-hop header stripping, capture publication,
+  forward retry, partial cache promotion.
 - `internal/serve` — RFC 7233 Range cases.
+- `internal/netresolve` — DoH + UDP + cache + multi-resolver fallback.
+- `internal/retry`, `internal/circuit`, `internal/bandwidth`,
+  `internal/upstream` — the resilience layer.
+- `internal/persist`, `internal/verify`, `internal/doctor` — JSONL log,
+  CRC framework, diagnostic checks.
 - `internal/export`, `internal/capture`, `internal/config` — unit tests.
 - `e2e/` — full forward → watcher → serve cycle against a fake Sony-CDN-
   shaped upstream, including the multi-part FDM scenario.
+
+### Windows + Defender Application Control note
+
+On some Windows installs, Microsoft Defender Application Control will
+briefly block freshly-built test binaries that `go test` writes into
+obscured temp paths (`%LocalAppData%\Temp\go-buildXXXXX\...`). When that
+happens — typically for one or two specific packages, non-deterministic
+— rerun with the bundled wrapper:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run-tests.ps1
+```
+
+It builds each test binary to `./.testbin/<pkg>.test.exe` and retries
+the launch up to 5 times with a short delay if Defender refuses the
+first attempt. The wrapper accepts the same package patterns as
+`go test`: `scripts/run-tests.ps1 ./internal/bandwidth/...`.
 
 See the testing strategy in
 [docs/architecture.md](docs/architecture.md#testing-strategy).
@@ -189,9 +265,10 @@ See the testing strategy in
 | [docs/architecture.md](docs/architecture.md) | Repository layout, package responsibilities, request pipeline, session model, testing strategy. |
 | [docs/cdn-patterns.md](docs/cdn-patterns.md) | PS4 / PS5 CDN URL shapes and the rule packs that classify them. |
 | [docs/configuration.md](docs/configuration.md) | `config.yaml` reference + CLI flags + library layouts. |
+| [docs/network-resilience.md](docs/network-resilience.md) | Phase 2.5 DNS + retry + proxy-chain + partial cache + diagnostics. |
 | [docs/roadmap.md](docs/roadmap.md) | Vision, user flows, phases, risks, open questions, v1.0 definition of done. |
 | [docs/research.md](docs/research.md) | Prior-art tools, dependency budget, legal / licence notes, external references. |
-| [docs/decisions/](docs/decisions/) | Architecture Decision Records. |
+| [docs/decisions/](docs/decisions/) | Architecture Decision Records (0001 proxy stack, 0002 dep budget, 0003 network resilience). |
 
 ---
 

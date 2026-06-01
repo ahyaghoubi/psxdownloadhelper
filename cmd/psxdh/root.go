@@ -12,5 +12,7 @@ func newRootCmd() *cobra.Command {
 	}
 	cmd.AddCommand(newVersionCmd())
 	cmd.AddCommand(newProxyCmd())
+	cmd.AddCommand(newDoctorCmd())
+	cmd.AddCommand(newProbeCmd())
 	return cmd
 }

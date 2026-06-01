@@ -186,3 +186,124 @@ func TestLoadInvalidYAML(t *testing.T) {
 		t.Error("expected parse error for malformed YAML")
 	}
 }
+
+func TestValidateRetryNegativeAttempts(t *testing.T) {
+	c := Default()
+	c.Forward.Retry.MaxAttempts = -1
+	err := c.Validate()
+	if err == nil || !strings.Contains(err.Error(), "forward.retry.max_attempts") {
+		t.Errorf("expected retry validation error, got %v", err)
+	}
+}
+
+func TestValidateRetryInitialExceedsMax(t *testing.T) {
+	c := Default()
+	c.Forward.Retry.InitialBackoffMs = 10000
+	c.Forward.Retry.MaxBackoffMs = 1000
+	err := c.Validate()
+	if err == nil || !strings.Contains(err.Error(), "initial_backoff_ms") {
+		t.Errorf("expected initial>max error, got %v", err)
+	}
+}
+
+func TestValidateRetryJitterRange(t *testing.T) {
+	c := Default()
+	c.Forward.Retry.Jitter = 1.5
+	err := c.Validate()
+	if err == nil || !strings.Contains(err.Error(), "jitter") {
+		t.Errorf("expected jitter error, got %v", err)
+	}
+}
+
+func TestValidateDNSModes(t *testing.T) {
+	for _, m := range []string{"", "system", "udp", "doh", "doh+udp"} {
+		c := Default()
+		c.Network.DNS.Mode = m
+		if err := c.Validate(); err != nil {
+			t.Errorf("DNS mode %q should validate: %v", m, err)
+		}
+	}
+	c := Default()
+	c.Network.DNS.Mode = "ouija"
+	if err := c.Validate(); err == nil {
+		t.Error("expected error for unknown DNS mode")
+	}
+}
+
+func TestValidateUpstreamProxyRequiresURL(t *testing.T) {
+	c := Default()
+	c.Network.UpstreamProxy.Enabled = true
+	c.Network.UpstreamProxy.URL = ""
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "upstream_proxy") {
+		t.Errorf("expected upstream_proxy url error, got %v", err)
+	}
+}
+
+func TestValidateUpstreamProxyScheme(t *testing.T) {
+	c := Default()
+	c.Network.UpstreamProxy.URL = "ftp://nope"
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "scheme") {
+		t.Errorf("expected scheme error, got %v", err)
+	}
+	for _, u := range []string{
+		"http://localhost:8888",
+		"https://localhost:8888",
+		"socks5://127.0.0.1:1080",
+		"socks5h://127.0.0.1:1080",
+	} {
+		c := Default()
+		c.Network.UpstreamProxy.URL = u
+		if err := c.Validate(); err != nil {
+			t.Errorf("scheme of %q should validate: %v", u, err)
+		}
+	}
+}
+
+func TestValidatePersistRequiresPathWhenEnabled(t *testing.T) {
+	c := Default()
+	c.Capture.Persist.Enabled = true
+	c.Capture.Persist.Path = ""
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "capture.persist") {
+		t.Errorf("expected persist path error, got %v", err)
+	}
+}
+
+func TestValidateBandwidthNonNegative(t *testing.T) {
+	c := Default()
+	c.Network.Bandwidth.ForwardBPS = -1
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "forward_bps") {
+		t.Errorf("expected forward_bps error, got %v", err)
+	}
+}
+
+func TestPersistPathExpansion(t *testing.T) {
+	dir := t.TempDir()
+	yamlPath := filepath.Join(dir, "config.yaml")
+	body := "capture:\n  persist:\n    enabled: true\n    path: \"~/psxdh-capture.jsonl\"\n"
+	if err := os.WriteFile(yamlPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if strings.HasPrefix(c.Capture.Persist.Path, "~") {
+		t.Errorf("persist path not expanded: %q", c.Capture.Persist.Path)
+	}
+}
+
+func TestLoadCanonicalExampleIncludesResilienceFields(t *testing.T) {
+	c, err := Load("testdata/config.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Forward.Retry.MaxAttempts != 1 {
+		t.Errorf("default retry max_attempts = %d, want 1", c.Forward.Retry.MaxAttempts)
+	}
+	if c.Network.DNS.Mode != "system" {
+		t.Errorf("default dns mode = %q, want system", c.Network.DNS.Mode)
+	}
+	if c.Network.DNS.CacheMaxEntries != 4096 {
+		t.Errorf("default cache_max_entries = %d, want 4096", c.Network.DNS.CacheMaxEntries)
+	}
+}

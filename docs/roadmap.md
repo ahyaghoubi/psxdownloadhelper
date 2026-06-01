@@ -120,6 +120,10 @@ sequenceDiagram
 | Headless / NAS | no | CLI only | no | **yes** |
 | Built-in downloader | no | no | no | deliberately none (use FDM/aria2/etc.) |
 | Partial update diff | no | no | no | optional later (PSXhub-inspired, Phase 4) |
+| Custom DNS / DoH | no | no | no | **yes** (Phase 2.5) |
+| Upstream VPN / SOCKS5 chain | no | no | no | **yes** (Phase 2.5) |
+| Forward-path retry w/ backoff | no | no | no | **yes** (Phase 2.5) |
+| Diagnostic CLI | no | no | no | **yes** (`doctor`, `probe`) |
 
 See [research.md](research.md) for who these references are.
 
@@ -188,6 +192,26 @@ validation remains in Phase 0.
 
 **Exit:** PS5 base + title update install on 2 titles using the FDM
 workflow.
+
+### Phase 2.5 — Network resilience (**done**)
+
+Implemented under [ADR 0003](decisions/0003-network-resilience.md). Adds
+the opt-in stack documented in
+[docs/network-resilience.md](network-resilience.md):
+
+- `internal/netresolve` — DoH + UDP + system fallback + TTL cache.
+- `internal/retry` — pre-byte-write retry policy with jitter.
+- `internal/circuit` — per-host failure breaker.
+- `internal/bandwidth` — token-bucket rate limiter.
+- `internal/upstream` — `*http.Client` builder wiring all of the above
+  plus SOCKS5/HTTP proxy chaining + IPv4 preference.
+- `internal/persist` — JSONL capture log surviving restarts.
+- `internal/verify` — `.crc` framework (parser stubs until Phase 0 locks
+  the format).
+- `cmd/psxdh doctor` and `cmd/psxdh probe` diagnostics.
+- Proxy integration: forward retry, partial cache write-through.
+
+All defaults preserve the pre-2.5 behaviour bit-for-bit.
 
 ### Phase 3 — Polish & distribution
 

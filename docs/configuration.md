@@ -15,11 +15,13 @@ mirrored exactly by `internal/config/config.go`.
 
 ## CLI
 
-The single binary is `psxdh`. The relevant Phase 1 commands:
+The single binary is `psxdh`. Commands shipping in Phase 1:
 
 | Command | Purpose |
 | --- | --- |
 | `psxdh proxy` | Run the HTTP proxy + library watcher until interrupted. |
+| `psxdh doctor` | Probe DNS resolvers + PSN CDN reachability. See [network-resilience.md](network-resilience.md#diagnostic-cli). |
+| `psxdh probe <url>` | Classify a URL, resolve it, and run a HEAD/GET diagnostic. |
 | `psxdh version` | Print the build version. |
 | `psxdh --help` | List subcommands. |
 
@@ -103,6 +105,10 @@ capture:
     - "aria2"
   prefetch_sc_metadata: false     # Phase 2 — fetch first 64 KB of _sc.pkg
                                   # to parse param.json for display metadata
+  persist:                        # Append-only JSONL log of capture events
+    enabled: false
+    path: ""                      # e.g. "~/.psxdh/capture.jsonl"
+    fsync: false                  # fsync after every write (slow but durable)
 
 handoff:                          # Phase 2 — "Send to FDM" handoff settings
   fdm:
@@ -113,6 +119,42 @@ handoff:                          # Phase 2 — "Send to FDM" handoff settings
 forward:
   mode: "auto"                    # auto | cache | strict
   passthrough_https: true         # CONNECT tunnel without MITM (do not change)
+  retry:                          # Pre-byte-write retry policy. See
+                                  # docs/network-resilience.md.
+    max_attempts: 1               # 1 = no retry (default, today's behaviour)
+    initial_backoff_ms: 200
+    max_backoff_ms: 5000
+    multiplier: 2.0
+    jitter: 0.2
+  partial_cache:                  # Tee successful forwards to disk and
+                                  # promote them into the library on success.
+    enabled: false
+    min_size_bytes: 1048576       # 1 MiB; skips tiny manifests
+
+network:                          # Upstream-side resilience. See
+                                  # docs/network-resilience.md for recipes.
+  dns:
+    mode: "system"                # system | udp | doh | doh+udp
+    resolvers: []                 # plain "1.1.1.1" or "https://…/dns-query"
+    timeout_ms: 1500              # per-resolver budget
+    cache_ttl_s: 300              # fallback TTL (when upstream returns 0)
+    cache_max_entries: 4096
+  prefer_ipv4: false              # try IPv4 addresses first
+  dial_timeout_ms: 10000
+  upstream_proxy:                 # HTTP/SOCKS5 chain (e.g. local VPN)
+    enabled: false
+    url: ""                       # http://, https://, socks5://, socks5h://
+    only_for_hosts: []            # empty = all hosts go through the proxy
+  circuit:                        # Per-host failure breaker
+    enabled: false
+    failure_threshold: 5
+    cooldown_ms: 30000
+  bandwidth:                      # Throttle forward path throughput
+    forward_bps: 0                # 0 = unlimited
+    burst_bytes: 0                # 0 = equal to forward_bps
+
+verify:
+  crc: false                      # Phase-0 sidecar verification scaffold
 
 log:
   level: "info"                   # debug | info | warn | error
@@ -174,6 +216,53 @@ log:
 | --- | --- | --- |
 | `forward.mode` | yes | `auto`: forward everything not in the library. `cache`: forward only classified URLs (block `unknown`). `strict`: never forward — return 502 when no local file exists. See [architecture.md](architecture.md#forward-modes). |
 | `forward.passthrough_https` | yes | Always true in v1. `CONNECT` is tunnelled as raw TCP; we never MITM HTTPS. Setting this to false would break PSN login and is rejected by the validator in spirit (kept as a config knob for transparency). |
+| `forward.retry.max_attempts` | no | Total attempts (initial + retries). `1` (default) disables retry. |
+| `forward.retry.initial_backoff_ms` | no | Wait before the second attempt. |
+| `forward.retry.max_backoff_ms` | no | Cap on any single sleep. Must be ≥ `initial_backoff_ms`. |
+| `forward.retry.multiplier` | no | Backoff growth factor (default 2.0). |
+| `forward.retry.jitter` | no | Fraction in `[0,1]` to randomise each sleep (default 0.2). |
+| `forward.partial_cache.enabled` | no | When true, successful non-Range GETs are tee'd to disk and atomically promoted into the library. |
+| `forward.partial_cache.min_size_bytes` | no | Minimum response size to cache; default 1 MiB. Below this we skip caching so we don't fill the library with tiny manifests. |
+
+See [docs/network-resilience.md](network-resilience.md) for the
+behaviour and the pre-write retry invariant.
+
+#### `network`
+
+All `network.*` fields are documented in detail in
+[docs/network-resilience.md](network-resilience.md). Highlights:
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `network.dns.mode` | no | `system` (default) \| `udp` \| `doh` \| `doh+udp`. |
+| `network.dns.resolvers` | no | Resolver list. `udp` accepts `host[:port]`; `doh` requires `https://…/dns-query`; `doh+udp` accepts both. |
+| `network.dns.timeout_ms` | no | Per-resolver budget (default 1500). |
+| `network.dns.cache_ttl_s` | no | Fallback TTL when the upstream returns 0 (default 300). |
+| `network.dns.cache_max_entries` | no | LRU cap on the in-memory resolver cache (default 4096). |
+| `network.prefer_ipv4` | no | Try IPv4 addresses before IPv6. |
+| `network.dial_timeout_ms` | no | Single-dial timeout (default 10000). |
+| `network.upstream_proxy.enabled` | no | Route forward traffic through an HTTP/SOCKS5 proxy. |
+| `network.upstream_proxy.url` | when enabled | `http://`, `https://`, `socks5://`, or `socks5h://`. |
+| `network.upstream_proxy.only_for_hosts` | no | When set, dial these hosts (and subdomains) through the proxy; others go direct. |
+| `network.circuit.enabled` | no | Per-host failure breaker. |
+| `network.circuit.failure_threshold` | no | Consecutive failures that open the breaker (default 5). |
+| `network.circuit.cooldown_ms` | no | Wait before half-opening (default 30000). |
+| `network.bandwidth.forward_bps` | no | Throughput cap on the forward path in bytes/sec (`0` = unlimited). |
+| `network.bandwidth.burst_bytes` | no | Token-bucket burst size; `0` defaults to `forward_bps`. |
+
+#### `verify`
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `verify.crc` | no | Reserved. The `.crc` sidecar parser is a scaffolded stub until Phase 0 captures the real PS5 format. Enabling this today is a no-op. |
+
+#### `capture.persist`
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `capture.persist.enabled` | no | Append every capture event as one JSON object per line to `path`. |
+| `capture.persist.path` | when enabled | Destination file; `~` is expanded; parent directories are created. |
+| `capture.persist.fsync` | no | `fsync()` after every write. Slow but durable across power loss. |
 
 #### `log`
 

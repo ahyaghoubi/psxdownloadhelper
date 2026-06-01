@@ -6,16 +6,22 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 
+	"github.com/ahyaghoubi/psxdownloadhelper/internal/bandwidth"
 	"github.com/ahyaghoubi/psxdownloadhelper/internal/capture"
+	"github.com/ahyaghoubi/psxdownloadhelper/internal/circuit"
 	"github.com/ahyaghoubi/psxdownloadhelper/internal/config"
 	"github.com/ahyaghoubi/psxdownloadhelper/internal/library"
 	"github.com/ahyaghoubi/psxdownloadhelper/internal/match"
+	"github.com/ahyaghoubi/psxdownloadhelper/internal/netresolve"
+	"github.com/ahyaghoubi/psxdownloadhelper/internal/persist"
 	"github.com/ahyaghoubi/psxdownloadhelper/internal/proxy"
 	"github.com/ahyaghoubi/psxdownloadhelper/internal/serve"
+	"github.com/ahyaghoubi/psxdownloadhelper/internal/upstream"
 
 	"github.com/spf13/cobra"
 )
@@ -60,16 +66,39 @@ func newProxyCmd() *cobra.Command {
 				return fmt.Errorf("init library watcher: %w", err)
 			}
 
+			// Build the upstream HTTP client with the configured DNS
+			// resolver, optional proxy chain, circuit breaker, and
+			// bandwidth cap. See docs/network-resilience.md for the
+			// user-facing knobs and docs/decisions/0003-network-resilience.md
+			// for the design.
+			upClient, err := buildUpstreamClient(cfg)
+			if err != nil {
+				return fmt.Errorf("init upstream client: %w", err)
+			}
+
 			proxySrv, err := proxy.New(proxy.Deps{
-				Config:   cfg,
-				Rules:    rules,
-				Resolver: idx,
-				Serve:    serveH,
-				Bus:      bus,
-				Logger:   logger,
+				Config:         cfg,
+				Rules:          rules,
+				Resolver:       idx,
+				Serve:          serveH,
+				Bus:            bus,
+				Logger:         logger,
+				UpstreamClient: upClient,
 			})
 			if err != nil {
 				return fmt.Errorf("init proxy: %w", err)
+			}
+
+			// Optional: persistent JSONL capture log.
+			var persistWorker *persist.Worker
+			if cfg.Capture.Persist.Enabled {
+				sink, err := persist.Open(cfg.Capture.Persist.Path, cfg.Capture.Persist.FSync)
+				if err != nil {
+					return fmt.Errorf("init persist: %w", err)
+				}
+				defer sink.Close()
+				persistWorker = sink.Subscribe(bus)
+				logger.Info("persisting capture events", "path", cfg.Capture.Persist.Path, "fsync", cfg.Capture.Persist.FSync)
 			}
 
 			printBanner(cmd, cfg, idx, rules)
@@ -89,9 +118,14 @@ func newProxyCmd() *cobra.Command {
 				}
 			}()
 
-			// Run watcher and proxy concurrently. The first to error cancels
-			// the other; clean shutdown is signalled by ctx.Done with nil error.
-			errCh := make(chan error, 2)
+			// Run watcher, proxy, and (optionally) persist worker concurrently.
+			// The first to error cancels the others; clean shutdown is
+			// signalled by ctx.Done with nil error.
+			workers := 2
+			if persistWorker != nil {
+				workers++
+			}
+			errCh := make(chan error, workers)
 			go func() {
 				if err := watcher.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 					errCh <- fmt.Errorf("watcher: %w", err)
@@ -106,9 +140,20 @@ func newProxyCmd() *cobra.Command {
 				}
 				errCh <- nil
 			}()
+			if persistWorker != nil {
+				go func() {
+					if err := persistWorker.Run(ctx, func(e error) {
+						logger.Warn("persist write failed", "err", e)
+					}); err != nil && !errors.Is(err, context.Canceled) {
+						errCh <- fmt.Errorf("persist: %w", err)
+						return
+					}
+					errCh <- nil
+				}()
+			}
 
 			var firstErr error
-			for i := 0; i < 2; i++ {
+			for i := 0; i < workers; i++ {
 				if e := <-errCh; e != nil && firstErr == nil {
 					firstErr = e
 					cancel()
@@ -175,6 +220,45 @@ func portOf(addr string) string {
 		return addr
 	}
 	return port
+}
+
+// buildUpstreamClient assembles the *http.Client used to forward
+// upstream traffic, with every configurable resilience knob wired in.
+func buildUpstreamClient(cfg *config.Config) (*http.Client, error) {
+	resolver, err := netresolve.NewFromConfig(netresolve.Config{
+		Mode:            cfg.Network.DNS.Mode,
+		Resolvers:       cfg.Network.DNS.Resolvers,
+		Timeout:         cfg.Network.DNS.Timeout(),
+		CacheTTL:        cfg.Network.DNS.CacheTTL(),
+		CacheMaxEntries: cfg.Network.DNS.CacheMaxEntries,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("init dns resolver: %w", err)
+	}
+
+	upCfg := upstream.Config{
+		Resolver:    resolver,
+		PreferIPv4:  cfg.Network.PreferIPv4,
+		DialTimeout: cfg.Network.DialTimeout(),
+	}
+	if cfg.Network.UpstreamProxy.Enabled {
+		upCfg.UpstreamProxy = cfg.Network.UpstreamProxy.URL
+		upCfg.UpstreamProxyOnlyForHosts = cfg.Network.UpstreamProxy.OnlyForHosts
+	}
+	if cfg.Network.Circuit.Enabled {
+		upCfg.Breaker = circuit.New(circuit.Config{
+			FailureThreshold: cfg.Network.Circuit.FailureThreshold,
+			Cooldown:         cfg.Network.Circuit.Cooldown(),
+		})
+	}
+	if cfg.Network.Bandwidth.ForwardBPS > 0 {
+		burst := cfg.Network.Bandwidth.BurstBytes
+		if burst <= 0 {
+			burst = cfg.Network.Bandwidth.ForwardBPS
+		}
+		upCfg.Bandwidth = bandwidth.NewBucket(cfg.Network.Bandwidth.ForwardBPS, burst)
+	}
+	return upstream.New(upCfg)
 }
 
 // lanIP returns the first non-loopback IPv4 address the host has, or an

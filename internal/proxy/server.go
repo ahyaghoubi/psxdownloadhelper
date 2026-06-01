@@ -18,6 +18,7 @@ import (
 	"github.com/ahyaghoubi/psxdownloadhelper/internal/config"
 	"github.com/ahyaghoubi/psxdownloadhelper/internal/library"
 	"github.com/ahyaghoubi/psxdownloadhelper/internal/match"
+	"github.com/ahyaghoubi/psxdownloadhelper/internal/retry"
 	"github.com/ahyaghoubi/psxdownloadhelper/internal/serve"
 )
 
@@ -45,6 +46,8 @@ type Server struct {
 	bus    capture.Bus
 	logger *slog.Logger
 	client *http.Client
+	retry  *retry.Policy
+	pcache *partialCache
 	httpd  *http.Server
 }
 
@@ -73,6 +76,17 @@ func New(d Deps) (*Server, error) {
 	if client == nil {
 		client = defaultUpstreamClient()
 	}
+	retryPolicy := &retry.Policy{
+		MaxAttempts:    d.Config.Forward.Retry.MaxAttempts,
+		InitialBackoff: d.Config.Forward.Retry.InitialBackoff(),
+		MaxBackoff:     d.Config.Forward.Retry.MaxBackoff(),
+		Multiplier:     d.Config.Forward.Retry.Multiplier,
+		Jitter:         d.Config.Forward.Retry.Jitter,
+	}
+	var pcache *partialCache
+	if d.Config.Forward.PartialCache.Enabled {
+		pcache = newPartialCache(d.Config.Library.Dir, d.Config.Forward.PartialCache.MinSizeBytes, logger)
+	}
 	return &Server{
 		cfg:    d.Config,
 		rules:  d.Rules,
@@ -81,6 +95,8 @@ func New(d Deps) (*Server, error) {
 		bus:    d.Bus,
 		logger: logger,
 		client: client,
+		retry:  retryPolicy,
+		pcache: pcache,
 	}, nil
 }
 

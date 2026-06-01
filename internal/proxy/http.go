@@ -8,6 +8,7 @@ import (
 
 	"github.com/ahyaghoubi/psxdownloadhelper/internal/capture"
 	"github.com/ahyaghoubi/psxdownloadhelper/internal/match"
+	"github.com/ahyaghoubi/psxdownloadhelper/internal/retry"
 )
 
 // hopByHopHeaders are stripped on both forward and response per RFC 7230 §6.1.
@@ -71,12 +72,18 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 // forward proxies the request upstream byte-for-byte, preserving query
 // strings and Range semantics. Hop-by-hop headers are stripped both ways.
+//
+// Transient upstream failures are retried per the configured retry policy,
+// but only BEFORE any response bytes have been written to the client (see
+// the invariant in internal/retry). Once we start streaming, a mid-stream
+// failure bubbles up so the console can re-issue with a Range header.
 func (s *Server) forward(w http.ResponseWriter, r *http.Request) {
-	outReq := r.Clone(r.Context())
-	outReq.RequestURI = ""
-	stripHopByHop(outReq.Header)
-
-	resp, err := s.client.Do(outReq)
+	resp, err := s.retry.Do(r.Context(), retry.DefaultClassifier, func(_ int) (*http.Response, error) {
+		outReq := r.Clone(r.Context())
+		outReq.RequestURI = ""
+		stripHopByHop(outReq.Header)
+		return s.client.Do(outReq)
+	})
 	if err != nil {
 		s.logger.Warn("forward failed", "url", r.URL.String(), "err", err)
 		http.Error(w, "upstream error: "+err.Error(), http.StatusBadGateway)
@@ -91,8 +98,24 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	if r.Method != http.MethodHead {
-		_, _ = io.Copy(w, resp.Body)
+	if r.Method == http.MethodHead {
+		return
+	}
+
+	body := io.Reader(resp.Body)
+	var finishPartial func(error)
+	if s.pcache != nil && s.pcache.Eligible(r, resp) {
+		if reader, done, err := s.pcache.Tee(r, resp); err == nil {
+			body = reader
+			finishPartial = done
+		} else {
+			s.logger.Warn("partial cache: tee failed", "err", err)
+		}
+	}
+
+	_, copyErr := io.Copy(w, body)
+	if finishPartial != nil {
+		finishPartial(copyErr)
 	}
 }
 
