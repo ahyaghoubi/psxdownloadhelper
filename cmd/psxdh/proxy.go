@@ -25,7 +25,7 @@ func newProxyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "proxy",
 		Short: "Run the HTTP proxy + library server",
-		Long:  "Loads configuration, starts the library watcher, and (once ADR 0001 lands) the HTTP proxy. Until then, this command runs the watcher half so the wiring can be smoke-tested end-to-end.",
+		Long:  "Loads configuration, starts the library watcher, and runs the HTTP proxy until interrupted. See docs/configuration.md for the flag and config-file reference.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := config.Load(cfgPath)
 			if err != nil {

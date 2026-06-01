@@ -9,9 +9,9 @@ import (
 )
 
 // handleCONNECT bridges an opaque TCP tunnel between the console and the
-// upstream host. plan.md §6.3 forbids MITM: we never decrypt, never log
-// payload bytes, never sniff. The console's HTTPS traffic (PSN auth, store)
-// is forwarded as raw bytes.
+// upstream host. The proxy design rules in docs/architecture.md forbid
+// MITM: we never decrypt, never log payload bytes, never sniff. The
+// console's HTTPS traffic (PSN auth, store) is forwarded as raw bytes.
 func (s *Server) handleCONNECT(w http.ResponseWriter, r *http.Request) {
 	hj, ok := w.(http.Hijacker)
 	if !ok {

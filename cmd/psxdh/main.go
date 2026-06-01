@@ -1,5 +1,6 @@
 // Command psxdh is the psxdownloadhelper CLI entry point.
-// See plan.md §5.1 and the implementation plan Step 1.7.
+// See docs/configuration.md for the CLI surface and docs/architecture.md
+// for how the proxy command wires the internal packages together.
 package main
 
 import (

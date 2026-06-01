@@ -11,9 +11,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Default returns a Config populated with the defaults from plan.md §5.5
-// plus the three additions resolved during sequencing
-// (admin.auto_open, library.stable_settle_ms, library.ignore_suffixes).
+// Default returns a Config populated with the defaults documented in
+// docs/configuration.md. Includes the three fields resolved during
+// sequencing (admin.auto_open, library.stable_settle_ms,
+// library.ignore_suffixes).
 func Default() *Config {
 	return &Config{
 		Proxy: ProxyConfig{Listen: "0.0.0.0:8080"},

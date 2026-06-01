@@ -1,11 +1,12 @@
 // Package match classifies PlayStation CDN URLs against rule packs.
 // Rule packs are YAML data files (see internal/match/rules/) so community
-// contributions don't require recompilation. See plan.md §6.4.
+// contributions don't require recompilation. See docs/cdn-patterns.md.
 package match
 
 import "regexp"
 
-// Kind labels each classified URL. Default order in plan.md §6.4.
+// Kind labels each classified URL. See docs/cdn-patterns.md (Kinds
+// reference) for the canonical list and the rule ordering rationale.
 type Kind string
 
 const (

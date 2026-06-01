@@ -24,7 +24,8 @@ var hopByHopHeaders = []string{
 }
 
 // handleHTTP processes absolute-URI GET/HEAD requests received as a forward
-// proxy. The pipeline is the one drawn in plan.md §6.3:
+// proxy. The pipeline is the one drawn in docs/architecture.md
+// (Request handling pipeline):
 //   classify → publish capture event → library hit? serve : forward (per mode)
 func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL == nil || r.URL.Scheme == "" || r.URL.Host == "" {

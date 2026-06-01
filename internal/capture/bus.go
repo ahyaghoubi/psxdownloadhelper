@@ -10,7 +10,8 @@ import (
 //
 // Back-pressure policy: publishers never block. When a subscriber's buffer is
 // full, the event is dropped for that subscriber only (counted via Dropped).
-// Plan.md §6.3 requires the proxy never to stall waiting on a slow consumer.
+// The proxy must never stall waiting on a slow consumer; see
+// docs/architecture.md (Capture bus).
 type Bus interface {
 	Publish(Event)
 	Subscribe() (<-chan Event, func())

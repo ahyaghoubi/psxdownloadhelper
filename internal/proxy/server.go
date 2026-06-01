@@ -3,7 +3,7 @@
 // target URL via match, and either serves a local file from the library
 // or forwards the request upstream — preserving headers, query string,
 // and Range semantics end-to-end. CONNECT requests are tunnelled without
-// MITM. See plan.md §6.2 and §6.3.
+// MITM. See docs/architecture.md (Request handling pipeline).
 package proxy
 
 import (

@@ -1,7 +1,7 @@
 // Package e2e contains integration tests that wire multiple psxdh packages
 // together and exercise the full request → watcher → serve → response cycle
-// against a fake Sony-CDN-shaped upstream. See plan.md §8 Phase 1 exit
-// criteria and the implementation plan Step 1.9.
+// against a fake Sony-CDN-shaped upstream. See the Phase 1 exit criteria
+// in docs/roadmap.md and the testing strategy in docs/architecture.md.
 package e2e
 
 import (
@@ -310,9 +310,9 @@ func TestPhase1_ForwardThenLocalServe(t *testing.T) {
 	}
 }
 
-// TestPhase1_MultiPartSession exercises U2 from plan.md §2.2: a multi-part
-// title where each part transitions pending → local → served as the user
-// drops them in one by one with FDM.
+// TestPhase1_MultiPartSession exercises user story U2 from docs/roadmap.md:
+// a multi-part title where each part transitions pending → local → served as
+// the user drops them in one by one with FDM.
 func TestPhase1_MultiPartSession(t *testing.T) {
 	body := func(i int) []byte {
 		b := make([]byte, 256)

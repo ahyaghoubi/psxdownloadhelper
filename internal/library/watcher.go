@@ -14,11 +14,12 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
-// WatcherConfig configures the partial-write debounce policy. See plan.md §9
-// and §1.1 step 4 of the implementation plan.
+// WatcherConfig configures the partial-write debounce policy. See
+// docs/architecture.md (Library lifecycle → Watcher).
 type WatcherConfig struct {
 	// Settle is how long a file's size must remain unchanged before we emit
-	// KindStable. Default 2s, matches plan.md §14 DoD "within 2 s".
+	// KindStable. Default 2s, matches the v1.0 DoD "detect new files within
+	// 2 s" in docs/roadmap.md.
 	Settle time.Duration
 	// PollInterval is how often we re-stat in-flight files. Must be < Settle.
 	// Default 500ms.

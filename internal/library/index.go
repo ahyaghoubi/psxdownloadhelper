@@ -124,8 +124,8 @@ func (i *Index) Remove(p string) {
 
 // Resolve implements Resolver. It returns ok=false when nothing matches or
 // when multiple files share the same basename and the layout can't
-// disambiguate. The plan.md §6.3 idempotency rule mandates a deterministic
-// mapping: we never auto-pick between ambiguous candidates.
+// disambiguate. The proxy's idempotency rule (docs/architecture.md) mandates
+// a deterministic mapping: we never auto-pick between ambiguous candidates.
 func (i *Index) Resolve(u *url.URL) (string, bool) {
 	if u == nil {
 		return "", false

@@ -1,7 +1,8 @@
 // Package library indexes the local download folder and watches it for
-// file changes. See plan.md §5.3 and §6.2. The partial-write debounce
-// policy (size stable for N polls) is documented in plan.md §9 risk
-// "Library watcher races a partial write".
+// file changes. See docs/architecture.md (Library lifecycle) and
+// docs/configuration.md (Library layouts). The partial-write debounce
+// policy (size stable for N polls) mitigates the
+// "Library watcher races a partial write" risk in docs/roadmap.md.
 package library
 
 // EventKind describes a filesystem transition observed by the watcher.

@@ -1,5 +1,5 @@
 // Package config loads and validates psxdh's runtime configuration.
-// The on-disk schema is YAML and is documented in plan.md §5.5.
+// The on-disk schema is YAML and is documented in docs/configuration.md.
 package config
 
 import "time"

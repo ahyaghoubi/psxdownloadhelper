@@ -1,7 +1,8 @@
 // Package serve streams files from the local library back to the console.
 // All Range handling defers to stdlib http.ServeContent so the RFC 7233
 // edge cases (suffix, open-ended, 416) are handled identically to net/http.
-// See plan.md §6.2 component "serve" and the §10 testing strategy.
+// See docs/architecture.md (Package responsibilities) and the testing
+// strategy in the same document.
 package serve
 
 import (
@@ -24,10 +25,11 @@ func New(logger *slog.Logger) *Handler {
 }
 
 // ServeFile streams the file at path back to the client, honouring any
-// Range header on r. plan.md §1.6 requires re-stat at open time so a file
-// overwritten between the watcher's KindStable and the console's range
-// request is detected (the size in the response reflects what's on disk
-// now, not what the watcher recorded earlier).
+// Range header on r. We re-stat at open time so a file overwritten between
+// the watcher's KindStable and the console's range request is detected
+// (the size in the response reflects what's on disk now, not what the
+// watcher recorded earlier). See docs/architecture.md (design rule
+// "Stream, never buffer" and the watcher-race risk in docs/roadmap.md).
 func (h *Handler) ServeFile(w http.ResponseWriter, r *http.Request, path string) {
 	f, err := os.Open(path)
 	if err != nil {

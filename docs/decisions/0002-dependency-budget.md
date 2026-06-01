@@ -7,7 +7,7 @@
 
 ## Context
 
-[plan.md §12](../../plan.md#12-dependencies-go) sets a "stdlib-first" posture and lists a short candidate set for Phase 1–2. Without a written budget, dependency creep happens by accident: a contributor adds a logger because slog is "too verbose", a YAML library because koanf seems heavy, and within a release we are maintaining a dependency tree we cannot review.
+[research.md — Dependencies](../research.md#dependencies) sets a "stdlib-first" posture and lists a short candidate set for Phase 1–2. Without a written budget, dependency creep happens by accident: a contributor adds a logger because slog is "too verbose", a YAML library because koanf seems heavy, and within a release we are maintaining a dependency tree we cannot review.
 
 This ADR codifies what is in, what is out, and how to add anything else.
 
@@ -41,7 +41,7 @@ This ADR codifies what is in, what is out, and how to add anything else.
 
 | Candidate | Purpose |
 | --- | --- |
-| `github.com/charmbracelet/bubbletea` | Optional TUI (only if [plan.md §8 Phase 4](../../plan.md#phase-4--optional-enhancements) ships it). |
+| `github.com/charmbracelet/bubbletea` | Optional TUI (only if [roadmap.md Phase 4](../roadmap.md#phase-4--optional-enhancements-post-v10) ships it). |
 
 ### Explicitly excluded for v1
 
@@ -55,7 +55,7 @@ This ADR codifies what is in, what is out, and how to add anything else.
 ## Process for adding a new dependency
 
 1. Open a new ADR (`docs/decisions/NNNN-<package>.md`).
-2. State: what stdlib gap it fills, what alternatives were considered, licence (must be MIT/BSD/Apache-2.0 compatible — never GPL into this project per [plan.md §11](../../plan.md#11-legal-ethics--licence)), maintenance signal (last release, open issues).
+2. State: what stdlib gap it fills, what alternatives were considered, licence (must be MIT/BSD/Apache-2.0 compatible — never GPL into this project per [research.md — Legal, ethics & licence](../research.md#legal-ethics--licence)), maintenance signal (last release, open issues).
 3. Land the ADR before adding the import.
 
 ## Consequences

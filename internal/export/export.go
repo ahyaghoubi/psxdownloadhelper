@@ -1,7 +1,7 @@
 // Package export writes captured URL lists in formats that external
 // downloaders (FDM, aria2, IDM, etc.) can consume. Phase 1 ships only
 // WriteTxt — the plain one-URL-per-line format. WriteFDMBatch and
-// WriteAria2 land in Phase 2 (see plan.md §8 Phase 2 Step 2.6).
+// WriteAria2 land in Phase 2 (see docs/roadmap.md).
 package export
 
 import (
@@ -12,8 +12,8 @@ import (
 )
 
 // WriteTxt writes urls to w, one per line with LF terminators. The full
-// URL is preserved exactly (including query strings) per plan.md §6.3
-// "Preserve query strings end-to-end".
+// URL is preserved exactly (including query strings) per the proxy design
+// rule "preserve query strings end-to-end" in docs/architecture.md.
 //
 // Empty or whitespace-only entries are skipped — a paste from a dashboard
 // list shouldn't produce a 0-byte URL line that confuses the downloader.

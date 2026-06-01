@@ -17,7 +17,7 @@ If revisited, candidates remain Option B (`elazarl/goproxy`) and Option C (raw s
 
 ## Context
 
-[plan.md §4.3](../../plan.md#43-phase-0--validation-checklist-gate-before-6-8-phase-1) lists three candidate stacks for the proxy core:
+[roadmap.md](../roadmap.md#phase-0--research--validation) lists three candidate stacks for the proxy core (originally captured in the Phase 0 validation gate):
 
 1. Stdlib `net/http` with a custom `Director` plus manual `Hijacker`-based `CONNECT` tunnel.
 2. `elazarl/goproxy` (used by [RewindPS4](https://github.com/Ailyth99/RewindPS4)).
@@ -50,7 +50,7 @@ The decision drives `internal/proxy/server.go` and ripples through every other p
 
 ## Decision
 
-To be filled after the Phase 0 spike. Default expectation: **Option A** (stdlib + `Hijacker`), per [plan.md §4.3](../../plan.md#43-phase-0--validation-checklist-gate-before-6-8-phase-1) "stdlib + hijack will suffice; goproxy only if it removes meaningful boilerplate."
+To be filled after the Phase 0 spike. Default expectation: **Option A** (stdlib + `Hijacker`) — "stdlib + hijack will suffice; goproxy only if it removes meaningful boilerplate."
 
 ### Spike methodology
 
@@ -80,4 +80,4 @@ Side-by-side capture against [PSXMaster](https://github.com/ghost1372/PSXMaster)
 
 ## Clean-room note
 
-This project is clean-room MIT. PSXMaster (MIT) is the only readable reference per [plan.md §11](../../plan.md#11-legal-ethics--licence). KOPElan and PSXhub source must not be read while this ADR or any related code is open. Where PSXMaster's *behaviour* informs a decision, cite the file/commit in this ADR.
+This project is clean-room MIT. PSXMaster (MIT) is the only readable reference per [research.md — Legal, ethics & licence](../research.md#legal-ethics--licence). KOPElan and PSXhub source must not be read while this ADR or any related code is open. Where PSXMaster's *behaviour* informs a decision, cite the file/commit in this ADR.

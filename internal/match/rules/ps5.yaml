@@ -1,4 +1,4 @@
-# Default PS5 rule pack. Patterns from plan.md §6.4 and psdevwiki PS5 Online Connections.
+# Default PS5 rule pack. See docs/cdn-patterns.md and psdevwiki PS5 Online Connections.
 # Order matters: pkg-delta and pkg-sc are checked before the generic pkg-app
 # so chunks named ..._sc.pkg or ...-DP.pkg classify correctly.
 platform: ps5

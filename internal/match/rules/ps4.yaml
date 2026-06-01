@@ -1,4 +1,4 @@
-# Default PS4 rule pack. Patterns from plan.md §6.4 and psdevwiki PS4 Online Connections.
+# Default PS4 rule pack. See docs/cdn-patterns.md and psdevwiki PS4 Online Connections.
 # Order matters: first match wins, so the more specific delta rule must precede
 # the generic patch/base rules.
 platform: ps4
