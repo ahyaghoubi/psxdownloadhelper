@@ -115,4 +115,3 @@ func sameDir(a, b string) bool {
 }
 
 var _ nodeTransport = (*localNode)(nil)
-

@@ -41,9 +41,8 @@ func Run(ctx context.Context, opts Options, services ...func(context.Context) er
 	}
 
 	var (
-		firstErr error
+		firstErr  error
 		remaining = len(services)
-		shutdownLogged bool
 	)
 
 	waitOne := func() bool {
@@ -70,10 +69,7 @@ func Run(ctx context.Context, opts Options, services ...func(context.Context) er
 			}
 			continue
 		}
-		if !shutdownLogged {
-			opts.Logger.Info("shutting down gracefully")
-			shutdownLogged = true
-		}
+		opts.Logger.Info("shutting down gracefully")
 		break
 	}
 

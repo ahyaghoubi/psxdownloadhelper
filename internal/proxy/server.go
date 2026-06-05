@@ -18,8 +18,8 @@ import (
 
 	"github.com/ahyaghoubi/psxdownloadhelper/internal/capture"
 	"github.com/ahyaghoubi/psxdownloadhelper/internal/config"
-	"github.com/ahyaghoubi/psxdownloadhelper/internal/lifecycle"
 	"github.com/ahyaghoubi/psxdownloadhelper/internal/library"
+	"github.com/ahyaghoubi/psxdownloadhelper/internal/lifecycle"
 	"github.com/ahyaghoubi/psxdownloadhelper/internal/match"
 	"github.com/ahyaghoubi/psxdownloadhelper/internal/retry"
 	"github.com/ahyaghoubi/psxdownloadhelper/internal/serve"

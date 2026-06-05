@@ -15,11 +15,11 @@ import (
 
 func newExportCmd() *cobra.Command {
 	var (
-		from    string
-		format  string
-		title   string
-		out     string
-		libDir  string
+		from   string
+		format string
+		title  string
+		out    string
+		libDir string
 	)
 	cmd := &cobra.Command{
 		Use:   "export",

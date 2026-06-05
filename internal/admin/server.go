@@ -45,19 +45,19 @@ var webFS embed.FS
 
 // Deps bundles the collaborators the dashboard reads from.
 type Deps struct {
-	Config     *config.Config
-	ConfigPath string // path to config.yaml; "" means none (PUT /api/config is read-only)
-	Token      string // resolved token; empty means no auth (loopback only)
-	Version    string
-	Bus        capture.Bus
-	Sessions   *session.Store
-	Index      *library.Index
-	DNSHealth  *netresolve.HealthResolver // optional
-	Aria2      *handoff.Aria2Client       // optional
-	Cluster    *cluster.Manager           // optional (master only)
-	Prober     cluster.Prober             // optional (master only; used by /api/jobs/import)
-	OnJobsChanged func()                  // optional debounced state-save trigger
-	Logger     *slog.Logger
+	Config        *config.Config
+	ConfigPath    string // path to config.yaml; "" means none (PUT /api/config is read-only)
+	Token         string // resolved token; empty means no auth (loopback only)
+	Version       string
+	Bus           capture.Bus
+	Sessions      *session.Store
+	Index         *library.Index
+	DNSHealth     *netresolve.HealthResolver // optional
+	Aria2         *handoff.Aria2Client       // optional
+	Cluster       *cluster.Manager           // optional (master only)
+	Prober        cluster.Prober             // optional (master only; used by /api/jobs/import)
+	OnJobsChanged func()                     // optional debounced state-save trigger
+	Logger        *slog.Logger
 }
 
 // Server is the admin HTTP server.

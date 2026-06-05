@@ -27,9 +27,9 @@ type Manager struct {
 	mu       sync.Mutex
 	inflight sync.WaitGroup
 	nodes    map[string]*nodeState
-	work   []*workItem
-	games  map[string]*gameState
-	nextID int64
+	work     []*workItem
+	games    map[string]*gameState
+	nextID   int64
 }
 
 type nodeState struct {
