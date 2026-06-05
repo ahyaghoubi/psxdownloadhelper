@@ -124,28 +124,41 @@ func TestPublishWithNoSubscribers(t *testing.T) {
 }
 
 func TestConcurrentPublishersAndSubscribers(t *testing.T) {
-	b := NewBus(1024)
+	const (
+		subs               = 4
+		eventsPerPublisher = 1000
+		publishers         = 4
+	)
+	wantPerSub := eventsPerPublisher * publishers
+	wantTotal := int64(subs * wantPerSub)
 
-	const subs = 4
-	const eventsPerPublisher = 1000
-	const publishers = 4
+	// Size the buffer for the full burst so this test checks concurrent safety,
+	// not intentional drop behaviour (covered by TestSlowSubscriberDoesNotBlockOthers).
+	b := NewBus(wantPerSub)
 
 	var wg sync.WaitGroup
 	var receivedTotal atomic.Int64
+	publishDone := make(chan struct{})
 
-	for i := 0; i < subs; i++ {
+	for range subs {
 		ch, un := b.Subscribe()
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			defer un()
-			deadline := time.After(5 * time.Second)
 			for {
 				select {
 				case <-ch:
 					receivedTotal.Add(1)
-				case <-deadline:
-					return
+				case <-publishDone:
+					for {
+						select {
+						case <-ch:
+							receivedTotal.Add(1)
+						default:
+							return
+						}
+					}
 				}
 			}
 		}()
@@ -155,29 +168,23 @@ func TestConcurrentPublishersAndSubscribers(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	var pubWG sync.WaitGroup
-	for p := 0; p < publishers; p++ {
+	for range publishers {
 		pubWG.Add(1)
 		go func() {
 			defer pubWG.Done()
-			for i := 0; i < eventsPerPublisher; i++ {
+			for range eventsPerPublisher {
 				b.Publish(newEvent("/concurrent", match.KindPKGApp))
 			}
 		}()
 	}
 	pubWG.Wait()
-
-	// Allow subscribers to drain.
-	time.Sleep(100 * time.Millisecond)
-
-	// Each event should reach each subscriber, modulo any drops if the buffer
-	// proved too small. With buffer=1024 and 4000 events spread over 4 subs,
-	// we expect close to 16000 deliveries.
-	got := receivedTotal.Load()
-	if got < int64(subs*eventsPerPublisher*publishers/2) {
-		t.Errorf("delivered events = %d; expected at least half of %d", got, subs*eventsPerPublisher*publishers)
-	}
-
+	close(publishDone)
 	wg.Wait()
+
+	got := receivedTotal.Load()
+	if got != wantTotal {
+		t.Errorf("delivered events = %d; want %d (drops=%d)", got, wantTotal, b.Dropped())
+	}
 }
 
 func TestNegativeBufferSizeDoesNotPanic(t *testing.T) {
