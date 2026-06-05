@@ -7,8 +7,11 @@ stack — introduced in
 retry, proxy-chain, partial-cache, breaker, bandwidth, and persistence
 features so the proxy degrades gracefully when the network does.
 
-Everything in this document is **off by default**. The defaults match
-the pre-ADR-0003 behaviour bit-for-bit; enable only what you need.
+The built-in defaults (`config.Default()`) already ship the **Iran / ISP-poisoned
+DNS** recipe: DoH+UDP resolvers, health ranking, forward retry, partial cache,
+and integrity verification. The sections below document each knob so you can
+tune or disable them. Circuit breaker, upstream proxy chain, and bandwidth
+throttle remain off unless you opt in.
 
 - [Quick recipes](#quick-recipes)
 - [DNS resolution](#dns-resolution)
@@ -29,11 +32,16 @@ network:
   dns:
     mode: "doh+udp"
     resolvers:
-      - "https://free.shecan.ir/dns-query"
-      - "https://dns.electrotm.org/dns-query"
-      - "178.22.122.100"   # Shecan plain UDP
+      - "1.1.1.1"                          # Cloudflare UDP (global)
+      - "9.9.9.9"                          # Quad9 UDP (global)
+      - "8.8.8.8"                          # Google UDP (global)
+      - "8.8.4.4"
+      - "178.22.122.100"                   # Shecan UDP
       - "185.51.200.2"
+      - "https://dns.electrotm.org/dns-query"
+      - "https://free.shecan.ir/dns-query"
       - "https://1.1.1.1/dns-query"
+      - "https://dns.google/dns-query"
 forward:
   retry:
     max_attempts: 4
@@ -100,6 +108,42 @@ Known good DoH endpoints inside Iran (community-sourced; verify with
 - `https://dns.begzar.ir/dns-query` (Begzar)
 - `https://1.1.1.1/dns-query` (Cloudflare)
 - `https://dns.google/dns-query` (Google)
+
+### DNS resolver health ranking
+
+Iranian DoH endpoints flap: one that worked this morning may time out this
+afternoon. With a fixed resolver list, a dead first entry taxes *every*
+lookup with its full per-resolver timeout before falling through. Enable
+health ranking to re-order the list by observed latency and recent
+success:
+
+```yaml
+network:
+  dns:
+    mode: "doh+udp"
+    resolvers:
+      - "1.1.1.1"
+      - "9.9.9.9"
+      - "8.8.8.8"
+      - "8.8.4.4"
+      - "178.22.122.100"
+      - "https://dns.electrotm.org/dns-query"
+      - "https://free.shecan.ir/dns-query"
+    health:
+      enabled: true
+      reprobe_interval_ms: 60000
+```
+
+- Ranking is **ordering only** — the resolver set and the system-resolver
+  fallback tail are unchanged. A resolver that just timed out drops to the
+  back and climbs again as it starts answering.
+- Live traffic updates the ranking continuously. `reprobe_interval_ms`
+  adds a background re-probe so the order stays current even on an idle
+  link; set it to `0` to rely on live traffic alone.
+- An `NXDOMAIN` is a valid, fast answer about the *name* — it does not
+  count against a resolver's health.
+- The dashboard's connectivity panel renders the current ranking
+  (latency + ok/fail per resolver).
 
 ## Forward retry policy
 
@@ -192,10 +236,43 @@ Scope (intentionally narrow for v1):
 - Same basename is not already in the library, and not currently being
   cached.
 
-A failed download leaves the `.partial` file behind as a breadcrumb
-(you can inspect or delete it manually). The next eligible forward
-overwrites it. Resuming from a partial across runs is on the Phase 2.5+
-roadmap.
+A failed download leaves the `.partial` file behind. With `resume`
+enabled (the default), the next eligible forward continues it instead of
+starting over — see below.
+
+### Cross-run resumable downloads
+
+On a link that drops every few minutes, restarting a 100 GB download from
+zero is the failure mode that makes the tool unusable. When
+`forward.partial_cache.resume` is `true` (default), psxdh continues a
+`.partial` left behind by an earlier, interrupted forward:
+
+```yaml
+forward:
+  partial_cache:
+    enabled: true
+    resume: true        # default
+```
+
+How it works:
+
+- Alongside each `.partial`, psxdh writes a `<basename>.partial.meta`
+  sidecar recording the upstream validators (`ETag` / `Last-Modified`)
+  and the total `Content-Length`.
+- On the next eligible forward for the same URL, psxdh issues an upstream
+  `Range: bytes=<offset>-` with `If-Range: <validator>` to fetch only the
+  remainder, then serves the client the disk prefix followed by the new
+  bytes (a synthesised `200` with the full length).
+- The resume is **gated on the validators still matching**. If the upstream
+  object changed (the server answers `200` instead of `206`, or the total
+  size differs), psxdh discards the stale `.partial` and downloads fresh.
+  It never stitches bytes from two different objects.
+- On a clean finish the file is promoted into the library and the sidecar
+  removed; on another failure the `.partial` + meta are kept for the next
+  attempt.
+
+The on-disk byte stream is never corrupted by a mid-stream drop: the worst
+case is a fresh re-download (the pre-resume behaviour).
 
 ## Bandwidth throttle
 

@@ -1,0 +1,49 @@
+# golangci-lint config for psxdh. Kept deliberately not-noisy: a focused set
+# that catches real bugs and keeps the disciplined codebase tidy, without
+# fighting the project's existing style.
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - misspell
+    - bodyclose
+    - revive
+
+  settings:
+    misspell:
+      # The codebase is written in UK English throughout.
+      locale: UK
+    errcheck:
+      # Deferred Close() on connections, files, and response bodies is an
+      # accepted idiom here; flagging every one is noise, not signal.
+      exclude-functions:
+        - (io.Closer).Close
+        - (io.ReadCloser).Close
+        - (net.Conn).Close
+        - (*os.File).Close
+        # Writes to stdout / cobra's out writer: nothing actionable on error.
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+    revive:
+      rules:
+        - name: exported
+          disabled: true # the codebase already documents exported symbols where it matters
+
+  exclusions:
+    generated: lax
+    rules:
+      # Test files routinely ignore errors on close/write helpers.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - bodyclose
+
+formatters:
+  enable:
+    - gofmt

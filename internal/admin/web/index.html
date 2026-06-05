@@ -1,0 +1,857 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>psxdh dashboard</title>
+<style>
+  :root {
+    --bg: #0f1419; --panel: #1a2029; --line: #2a323d;
+    --fg: #e6edf3; --muted: #8b97a3; --accent: #5ad1b4; --warn: #e0a458; --bad: #e06c75;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  header { padding: 14px 18px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; color: var(--accent); }
+  header .meta { color: var(--muted); font-size: 12px; }
+  main { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 14px; }
+  @media (max-width: 820px) { main { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 12px 14px; overflow: hidden; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em;
+    color: var(--muted); margin: 0 0 10px; }
+  .panel.wide { grid-column: 1 / -1; }
+  #log { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+    max-height: 320px; overflow-y: auto; }
+  #log div { padding: 2px 0; border-bottom: 1px solid var(--line); word-break: break-all; }
+  .kind { color: var(--accent); }
+  .pill { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px; }
+  .pill.ok { background: rgba(90,209,180,.15); color: var(--accent); }
+  .pill.failed { background: rgba(224,108,117,.15); color: var(--bad); }
+  .pill.pending { background: rgba(139,151,163,.15); color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; }
+  .title { color: var(--accent); font-weight: 600; margin: 12px 0 4px; }
+  button { background: var(--accent); color: #06130f; border: 0; border-radius: 6px;
+    padding: 5px 10px; font-weight: 600; cursor: pointer; }
+  button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+  .num { font-variant-numeric: tabular-nums; }
+  .cfg-section { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin-bottom: 12px;
+    background: rgba(0,0,0,.15); }
+  .cfg-section > h3 { margin: 0 0 4px; font-size: 15px; color: var(--fg); }
+  .cfg-intro { margin: 0 0 12px; font-size: 12.5px; color: var(--muted); }
+  .cfg-subhead { font-size: 12px; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--accent); margin: 14px 0 8px; font-weight: 600; }
+  .cfg-field { margin-bottom: 12px; }
+  .cfg-field label { display: block; font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+  .cfg-field label.inline { display: flex; align-items: center; gap: 8px; font-weight: 600; cursor: pointer; }
+  .cfg-help { font-size: 12px; color: var(--muted); margin-top: 4px; line-height: 1.45; }
+  .cfg-field input[type=text], .cfg-field input[type=number], .cfg-field input[type=password],
+  .cfg-field select, .cfg-field textarea {
+    width: 100%; background: var(--bg); color: var(--fg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 8px; font: inherit; }
+  .cfg-field textarea { min-height: 72px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; resize: vertical; }
+  .cfg-field input:disabled, .cfg-field select:disabled, .cfg-field textarea:disabled { opacity: .6; }
+  .cfg-section-actions { display: flex; justify-content: flex-end; margin-top: 10px; padding-top: 10px;
+    border-top: 1px solid var(--line); }
+  .cfg-restart-note { font-size: 12px; color: var(--warn); margin: 0 0 10px; }
+  #network-hint { font-size: 12px; color: var(--muted); margin-top: 4px; width: 100%; }
+  #lan-ips { font-size: 12px; color: var(--accent); margin-top: 2px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>psxdh</h1>
+  <div>
+    <span class="meta" id="status">connecting…</span>
+    <div id="lan-ips"></div>
+    <div id="network-hint"></div>
+  </div>
+</header>
+<main>
+  <section class="panel wide">
+    <h2>Live capture log</h2>
+    <div id="log"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Sessions</h2>
+    <div class="row">
+      <button class="ghost" onclick="loadSessions()">Refresh</button>
+      <button class="ghost" onclick="exportAll('aria2')">Export all (aria2)</button>
+      <button class="ghost" onclick="exportAll('txt')">Export all (txt)</button>
+      <label class="ghost" style="display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:6px;padding:5px 10px;cursor:pointer;color:var(--muted)">
+        Import capture…
+        <input id="import-file" type="file" accept=".jsonl,.json,application/json" style="display:none" onchange="importCapture(event)">
+      </label>
+    </div>
+    <div id="sessions"><p class="meta">No captures yet.</p></div>
+  </section>
+
+  <section class="panel">
+    <h2>Connectivity</h2>
+    <div class="row">
+      <button class="ghost" onclick="loadDNS()">DNS health</button>
+      <button class="ghost" onclick="loadDoctor()">Run doctor</button>
+    </div>
+    <div id="dns"></div>
+    <div id="doctor"></div>
+  </section>
+
+  <section class="panel wide" id="cluster-panel" style="display:none">
+    <h2>Cluster</h2>
+    <div id="cluster-summary" class="meta"></div>
+    <div class="row">
+      <input id="node-url" placeholder="http://192.168.1.50:8082" style="flex:1;min-width:200px;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:5px 8px">
+      <button onclick="addNode()">Add node</button>
+      <button class="ghost" onclick="discoverNodes()">Discover (mDNS)</button>
+    </div>
+    <div id="discovered"></div>
+    <div id="cluster-nodes"></div>
+  </section>
+
+  <section class="panel wide" id="config-panel" style="display:none">
+    <h2>Settings</h2>
+    <p class="cfg-restart-note">Changes are written to your config file. Restart psxdh to apply them.</p>
+    <div class="row">
+      <button class="ghost" onclick="loadConfig()">Reload</button>
+      <button id="save-all-btn" onclick="saveConfig()">Save all</button>
+      <span id="config-status" class="meta"></span>
+    </div>
+    <div id="config-form"></div>
+  </section>
+</main>
+
+<script>
+const TOKEN = new URLSearchParams(location.search).get("token") || "";
+function api(path) {
+  const u = new URL(path, location.origin);
+  if (TOKEN) u.searchParams.set("token", TOKEN);
+  return u.toString();
+}
+async function getJSON(path) {
+  const r = await fetch(api(path), { headers: TOKEN ? { "X-Psxdh-Token": TOKEN } : {} });
+  if (!r.ok) throw new Error(r.status + " " + r.statusText);
+  return r.json();
+}
+
+const SECTION_META = {
+  proxy: { title: "Proxy", intro: "HTTP proxy the console connects to for PKG downloads." },
+  admin: { title: "Dashboard", intro: "Embedded web UI and API. LAN binds require a shared token." },
+  library: { title: "Library", intro: "Local folder psxdh watches, serves files from, and promotes completed downloads into." },
+  match: { title: "Match rules", intro: "Which console URLs psxdh recognises as PKG parts." },
+  capture: { title: "Capture", intro: "What gets logged, exported, and persisted when URLs are observed." },
+  handoff: { title: "Handoff", intro: "Push captured URLs to external downloaders (FDM or aria2)." },
+  forward: { title: "Forward", intro: "How psxdh fetches from Sony CDNs when no local file exists." },
+  network: { title: "Network", intro: "DNS, dial timeouts, upstream proxy, circuit breaker, and bandwidth limits." },
+  verify: { title: "Verify", intro: "Integrity checks so corrupt downloads are never served to the console." },
+  mdns: { title: "mDNS", intro: "Advertise psxdh on the LAN so you do not need to hunt for the PC IP." },
+  downloader: { title: "Downloader", intro: "Embedded aria2c engine used by cluster nodes and master-as-node." },
+  cluster: { title: "Cluster", intro: "Distributed download: master coordinates, slaves fetch assigned parts." },
+  jobs: { title: "Jobs", intro: "Portable capture workflow: import JSONL from home, persist progress across restarts." },
+  log: { title: "Log", intro: "Console log level and output format." },
+};
+
+const CONFIG_SCHEMA = [
+  { section: "proxy", path: "proxy.listen", label: "Listen address", type: "text",
+    help: "host:port the console HTTP proxy points at. Use 0.0.0.0 to accept LAN connections." },
+
+  { section: "admin", path: "admin.enabled", label: "Enabled", type: "bool",
+    help: "Start the web dashboard. Set false for headless operation." },
+  { section: "admin", path: "admin.listen", label: "Listen address", type: "text",
+    help: "host:port for the dashboard. Default binds all interfaces so a phone on the LAN can open it." },
+  { section: "admin", path: "admin.token", label: "Token", type: "password",
+    help: "Shared secret for non-loopback binds. Sent via ?token= or X-Psxdh-Token. Auto-generated when empty at startup." },
+  { section: "admin", path: "admin.auto_open", label: "Auto-open browser", type: "bool",
+    help: "Open the dashboard URL in the default browser when psxdh starts." },
+
+  { section: "library", path: "library.dir", label: "Directory", type: "text",
+    help: "Folder psxdh watches and serves from. Tilde (~) expands to your home directory." },
+  { section: "library", path: "library.layout", label: "Layout", type: "select",
+    options: ["basename", "per-title"],
+    help: "basename: flat lookup by filename. per-title: also require the title id in the path." },
+  { section: "library", path: "library.watch", label: "Watch filesystem", type: "bool",
+    help: "Use fsnotify on library.dir. When false, only the initial directory walk populates the index." },
+  { section: "library", path: "library.stable_settle_ms", label: "Stable settle (ms)", type: "number", step: 1,
+    help: "Milliseconds a file must stop growing before it is considered complete and indexed." },
+  { section: "library", path: "library.ignore_suffixes", label: "Ignore suffixes", type: "string-list",
+    help: "In-progress download extensions to skip until the file is renamed to its final name." },
+
+  { section: "match", path: "match.ps4", label: "PS4 rules", type: "bool",
+    help: "Load the embedded PS4 CDN rule pack. Ignored when rules_dir is set." },
+  { section: "match", path: "match.ps5", label: "PS5 rules", type: "bool",
+    help: "Load the embedded PS5 CDN rule pack (on by default)." },
+  { section: "match", path: "match.rules_dir", label: "Custom rules directory", type: "text",
+    help: "When set, replaces embedded rule packs with YAML files from this folder." },
+
+  { section: "capture", path: "capture.log_ignored", label: "Log ignored URLs", type: "bool",
+    help: "Publish capture events even for unrecognized URLs. Off by default to keep the log readable." },
+  { section: "capture", path: "capture.export_formats", label: "Export formats", type: "string-list",
+    help: "Formats the export package can emit: txt, fdm, aria2." },
+  { section: "capture", path: "capture.prefetch_sc_metadata", label: "Prefetch SC metadata", type: "bool",
+    help: "Background-fetch the first 64 KB of _sc.pkg to parse param.json for display metadata." },
+  { section: "capture", subsection: "Persist", path: "capture.persist.enabled", label: "Persist enabled", type: "bool",
+    help: "Append every capture event as one JSON line so a crash never loses observed URLs." },
+  { section: "capture", subsection: "Persist", path: "capture.persist.path", label: "Persist path", type: "text",
+    help: "Destination JSONL file. Required when persist is enabled." },
+  { section: "capture", subsection: "Persist", path: "capture.persist.fsync", label: "Fsync after write", type: "bool",
+    help: "Call fsync after every append. Slower but durable across power loss." },
+
+  { section: "handoff", subsection: "Free Download Manager", path: "handoff.fdm.enabled", label: "FDM enabled", type: "bool",
+    help: "Try the OS-specific Send to FDM action when handing off URLs." },
+  { section: "handoff", subsection: "Free Download Manager", path: "handoff.fdm.fdm_binary", label: "FDM binary", type: "text",
+    help: "Override the FDM executable path. Empty = auto-detect on PATH or default install location." },
+  { section: "handoff", subsection: "Free Download Manager", path: "handoff.fdm.fallback_to_clipboard", label: "Fallback to clipboard", type: "bool",
+    help: "If the FDM handoff fails, copy the URL to the clipboard instead." },
+  { section: "handoff", subsection: "aria2 RPC", path: "handoff.aria2.enabled", label: "aria2 enabled", type: "bool",
+    help: "Enable JSON-RPC push to a running aria2c (dashboard → aria2 button and auto_push)." },
+  { section: "handoff", subsection: "aria2 RPC", path: "handoff.aria2.rpc_url", label: "RPC URL", type: "text",
+    help: "aria2 JSON-RPC endpoint, e.g. http://127.0.0.1:6800/jsonrpc (start aria2c with --enable-rpc)." },
+  { section: "handoff", subsection: "aria2 RPC", path: "handoff.aria2.rpc_secret", label: "RPC secret", type: "password",
+    help: "Token matching aria2c --rpc-secret." },
+  { section: "handoff", subsection: "aria2 RPC", path: "handoff.aria2.auto_push", label: "Auto-push captures", type: "bool",
+    help: "Push every captured PKG URL into aria2 automatically. Files land in library.dir with their basename." },
+
+  { section: "forward", path: "forward.mode", label: "Mode", type: "select",
+    options: ["auto", "cache", "strict"],
+    help: "auto: forward everything not local. cache: forward only classified URLs. strict: never forward — 502 when missing." },
+  { section: "forward", path: "forward.passthrough_https", label: "Passthrough HTTPS", type: "bool",
+    help: "Tunnel CONNECT as raw TCP without MITM. Required for PSN login; do not disable." },
+  { section: "forward", subsection: "Retry", path: "forward.retry.max_attempts", label: "Max attempts", type: "number", step: 1,
+    help: "Total forward attempts including the first. 1 disables retry." },
+  { section: "forward", subsection: "Retry", path: "forward.retry.initial_backoff_ms", label: "Initial backoff (ms)", type: "number", step: 1,
+    help: "Wait before the second attempt." },
+  { section: "forward", subsection: "Retry", path: "forward.retry.max_backoff_ms", label: "Max backoff (ms)", type: "number", step: 1,
+    help: "Cap on any single retry sleep. Must be ≥ initial backoff." },
+  { section: "forward", subsection: "Retry", path: "forward.retry.multiplier", label: "Multiplier", type: "number", step: 0.1,
+    help: "Backoff growth factor between attempts (default 2.0)." },
+  { section: "forward", subsection: "Retry", path: "forward.retry.jitter", label: "Jitter", type: "number", step: 0.05,
+    help: "Random fraction in [0,1] added to each sleep to avoid thundering herds." },
+  { section: "forward", subsection: "Partial cache", path: "forward.partial_cache.enabled", label: "Enabled", type: "bool",
+    help: "Tee successful forwards to disk and promote them into the library on completion." },
+  { section: "forward", subsection: "Partial cache", path: "forward.partial_cache.min_size_bytes", label: "Min size (bytes)", type: "number", step: 1,
+    help: "Minimum response size to cache. Skips tiny manifests (default 1 MiB)." },
+  { section: "forward", subsection: "Partial cache", path: "forward.partial_cache.resume", label: "Resume partials", type: "bool",
+    help: "Continue a .partial left by a dropped forward on the next run via Range requests." },
+
+  { section: "network", subsection: "DNS", path: "network.dns.mode", label: "Mode", type: "select",
+    options: ["system", "udp", "doh", "doh+udp"],
+    help: "Resolver strategy. doh+udp tries UDP first then DoH (good for flaky Iranian links)." },
+  { section: "network", subsection: "DNS", path: "network.dns.resolvers", label: "Resolvers", type: "string-list",
+    help: "Resolver list: IP addresses for UDP, https://…/dns-query URLs for DoH." },
+  { section: "network", subsection: "DNS", path: "network.dns.timeout_ms", label: "Timeout (ms)", type: "number", step: 1,
+    help: "Per-resolver lookup budget." },
+  { section: "network", subsection: "DNS", path: "network.dns.cache_ttl_s", label: "Cache TTL (s)", type: "number", step: 1,
+    help: "Fallback TTL when the upstream returns 0." },
+  { section: "network", subsection: "DNS", path: "network.dns.cache_max_entries", label: "Cache max entries", type: "number", step: 1,
+    help: "LRU cap on the in-memory DNS cache." },
+  { section: "network", subsection: "DNS health", path: "network.dns.health.enabled", label: "Health ranking", type: "bool",
+    help: "Re-rank resolvers by latency and success so a dead first entry stops slowing every lookup." },
+  { section: "network", subsection: "DNS health", path: "network.dns.health.reprobe_interval_ms", label: "Reprobe interval (ms)", type: "number", step: 1,
+    help: "Background re-probe cadence on idle links. 0 disables background probe." },
+  { section: "network", path: "network.prefer_ipv4", label: "Prefer IPv4", type: "bool",
+    help: "Try IPv4 addresses before IPv6 when dialing upstream." },
+  { section: "network", path: "network.dial_timeout_ms", label: "Dial timeout (ms)", type: "number", step: 1,
+    help: "Timeout for a single TCP dial to an upstream host." },
+  { section: "network", subsection: "Upstream proxy", path: "network.upstream_proxy.enabled", label: "Enabled", type: "bool",
+    help: "Route forward traffic through an HTTP or SOCKS5 proxy (e.g. local VPN)." },
+  { section: "network", subsection: "Upstream proxy", path: "network.upstream_proxy.url", label: "Proxy URL", type: "text",
+    help: "http://, https://, socks5://, or socks5h:// endpoint. Required when enabled." },
+  { section: "network", subsection: "Upstream proxy", path: "network.upstream_proxy.only_for_hosts", label: "Only for hosts", type: "string-list",
+    help: "When set, only these hosts (and subdomains) use the proxy. Empty = all hosts." },
+  { section: "network", subsection: "Circuit breaker", path: "network.circuit.enabled", label: "Enabled", type: "bool",
+    help: "Per-host failure breaker that temporarily stops dialing dead hosts." },
+  { section: "network", subsection: "Circuit breaker", path: "network.circuit.failure_threshold", label: "Failure threshold", type: "number", step: 1,
+    help: "Consecutive failures before the breaker opens." },
+  { section: "network", subsection: "Circuit breaker", path: "network.circuit.cooldown_ms", label: "Cooldown (ms)", type: "number", step: 1,
+    help: "Wait before half-opening the breaker and trying again." },
+  { section: "network", subsection: "Bandwidth", path: "network.bandwidth.forward_bps", label: "Forward limit (B/s)", type: "number", step: 1,
+    help: "Throughput cap on the forward path. 0 = unlimited." },
+  { section: "network", subsection: "Bandwidth", path: "network.bandwidth.burst_bytes", label: "Burst (bytes)", type: "number", step: 1,
+    help: "Token-bucket burst size. 0 defaults to forward_bps." },
+
+  { section: "verify", path: "verify.crc", label: "CRC sidecars", type: "bool",
+    help: "Enable .crc sidecar verification format (Phase-0 locked)." },
+  { section: "verify", path: "verify.on_stable", label: "Verify on stable", type: "bool",
+    help: "Run CRC verification when the watcher promotes a file. Corrupt PKGs are not served." },
+  { section: "verify", path: "verify.require_size_match", label: "Require size match", type: "bool",
+    help: "Refuse to serve a local file whose size differs from the upstream Content-Length." },
+
+  { section: "mdns", path: "mdns.enabled", label: "Enabled", type: "bool",
+    help: "Advertise psxdh on the LAN via mDNS (_http._tcp) for easy console setup." },
+  { section: "mdns", path: "mdns.instance_name", label: "Instance name", type: "text",
+    help: "Service name shown in mDNS browsers (default psxdh)." },
+
+  { section: "downloader", path: "downloader.engine", label: "Engine", type: "select",
+    options: ["aria2"],
+    help: "Download engine for cluster nodes. aria2 is the only supported engine." },
+  { section: "downloader", path: "downloader.aria2_binary", label: "aria2 binary", type: "text",
+    help: "Path to aria2c. Empty = auto-detect on PATH." },
+  { section: "downloader", path: "downloader.rpc_port", label: "RPC port", type: "number", step: 1,
+    help: "Port the managed aria2c RPC listens on (default 6800)." },
+  { section: "downloader", path: "downloader.rpc_secret", label: "RPC secret", type: "password",
+    help: "Secret for the embedded aria2 RPC. Auto-generated when empty." },
+  { section: "downloader", path: "downloader.connections_per_server", label: "Connections per server", type: "number", step: 1,
+    help: "aria2 -x: parallel connections to each host." },
+  { section: "downloader", path: "downloader.split", label: "Split", type: "number", step: 1,
+    help: "aria2 -s: number of splits per download." },
+  { section: "downloader", path: "downloader.max_concurrent", label: "Max concurrent", type: "number", step: 1,
+    help: "aria2 -j: maximum parallel downloads." },
+  { section: "downloader", path: "downloader.allow_http_fallback", label: "Allow HTTP fallback", type: "bool",
+    help: "Use the built-in HTTP downloader when aria2c is not installed. Cluster nodes normally require aria2c; enable only for local dev or CI." },
+
+  { section: "cluster", path: "cluster.enabled", label: "Enabled", type: "bool",
+    help: "Turn on master/slave distributed download coordination." },
+  { section: "cluster", path: "cluster.role", label: "Role", type: "select",
+    options: ["master", "slave"],
+    help: "master: PS5 proxies through this node. slave: downloads assigned parts for the master." },
+  { section: "cluster", path: "cluster.node_name", label: "Node name", type: "text",
+    help: "Label shown in the cluster dashboard. Defaults to hostname when empty." },
+  { section: "cluster", path: "cluster.bind", label: "Bind address", type: "text",
+    help: "host:port for the cluster/agent HTTP API." },
+  { section: "cluster", path: "cluster.master_url", label: "Master URL", type: "text",
+    help: "Slave only: base URL of the master node, e.g. http://192.168.1.10:8082." },
+  { section: "cluster", path: "cluster.token", label: "Cluster token", type: "password",
+    help: "Shared auth between master and slaves. Generated on the master when empty." },
+  { section: "cluster", path: "cluster.master_as_node", label: "Master as node", type: "bool",
+    help: "Master also runs the embedded downloader and fetches assigned parts locally." },
+
+  { section: "jobs", path: "jobs.import_on_start", label: "Import on start", type: "text",
+    help: "JSONL capture file to import when the master starts (work profile). Empty disables." },
+  { section: "jobs", path: "jobs.import_enumerate", label: "Import enumerate", type: "bool",
+    help: "Probe the CDN for the full _0.._N part series when importing. Disable if the work network cannot reach PlayStation CDN." },
+  { section: "jobs", path: "jobs.state_path", label: "State path", type: "text",
+    help: "JSON file for resumable job snapshots. Empty disables persistence." },
+
+  { section: "log", path: "log.level", label: "Level", type: "select",
+    options: ["debug", "info", "warn", "error"],
+    help: "Minimum log level written to stderr." },
+  { section: "log", path: "log.json", label: "JSON output", type: "bool",
+    help: "Emit structured JSON log records instead of plain text." },
+];
+
+let configEditable = false;
+let configPath = "";
+let config = {};
+let configFormBuilt = false;
+
+function getByPath(obj, path) {
+  return path.split(".").reduce((o, k) => (o == null ? undefined : o[k]), obj);
+}
+
+function setByPath(obj, path, value) {
+  const keys = path.split(".");
+  let cur = obj;
+  for (let i = 0; i < keys.length - 1; i++) {
+    if (cur[keys[i]] == null || typeof cur[keys[i]] !== "object") cur[keys[i]] = {};
+    cur = cur[keys[i]];
+  }
+  cur[keys[keys.length - 1]] = value;
+}
+
+function fieldId(path) { return "cfg-" + path.replace(/\./g, "-"); }
+
+function readControl(field) {
+  const el = document.getElementById(fieldId(field.path));
+  if (!el) return undefined;
+  switch (field.type) {
+    case "bool": return el.checked;
+    case "number": {
+      const v = el.value.trim();
+      if (v === "") return 0;
+      return field.step && field.step < 1 ? parseFloat(v) : parseInt(v, 10);
+    }
+    case "string-list":
+      return el.value.split("\n").map(s => s.trim()).filter(Boolean);
+    case "select":
+    case "text":
+    case "password":
+      return el.value;
+    default:
+      return el.value;
+  }
+}
+
+function writeControl(field, value) {
+  const el = document.getElementById(fieldId(field.path));
+  if (!el) return;
+  switch (field.type) {
+    case "bool":
+      el.checked = !!value;
+      break;
+    case "number":
+      el.value = value == null ? "" : value;
+      break;
+    case "string-list":
+      el.value = Array.isArray(value) ? value.join("\n") : "";
+      break;
+    default:
+      el.value = value == null ? "" : value;
+  }
+}
+
+function readFormIntoConfig() {
+  for (const field of CONFIG_SCHEMA) {
+    setByPath(config, field.path, readControl(field));
+  }
+}
+
+function populateFormFromConfig() {
+  for (const field of CONFIG_SCHEMA) {
+    writeControl(field, getByPath(config, field.path));
+  }
+  updateConfigReadOnly();
+}
+
+function updateConfigReadOnly() {
+  const disabled = !configEditable;
+  document.getElementById("save-all-btn").disabled = disabled;
+  for (const field of CONFIG_SCHEMA) {
+    const el = document.getElementById(fieldId(field.path));
+    if (el) el.disabled = disabled;
+  }
+  for (const btn of document.querySelectorAll("[data-cfg-section-save]")) {
+    btn.disabled = disabled;
+  }
+  const st = document.getElementById("config-status");
+  if (disabled) {
+    st.textContent = "read-only (no config path available)";
+  } else if (configPath && !st.textContent.startsWith("saved")) {
+    st.textContent = "saves to " + configPath;
+  }
+}
+
+function buildConfigForm() {
+  const root = document.getElementById("config-form");
+  root.innerHTML = "";
+
+  const sections = [];
+  const sectionIndex = new Map();
+  for (const field of CONFIG_SCHEMA) {
+    if (!sectionIndex.has(field.section)) {
+      sectionIndex.set(field.section, sections.length);
+      sections.push({ key: field.section, subsections: [], fields: [] });
+    }
+    const sec = sections[sectionIndex.get(field.section)];
+    if (field.subsection) {
+      let sub = sec.subsections.find(s => s.name === field.subsection);
+      if (!sub) {
+        sub = { name: field.subsection, fields: [] };
+        sec.subsections.push(sub);
+      }
+      sub.fields.push(field);
+    } else {
+      sec.fields.push(field);
+    }
+  }
+
+  for (const sec of sections) {
+    const meta = SECTION_META[sec.key] || { title: sec.key, intro: "" };
+    const card = document.createElement("div");
+    card.className = "cfg-section";
+    card.dataset.section = sec.key;
+
+    const h3 = document.createElement("h3");
+    h3.textContent = meta.title;
+    card.appendChild(h3);
+
+    const intro = document.createElement("p");
+    intro.className = "cfg-intro";
+    intro.textContent = meta.intro;
+    card.appendChild(intro);
+
+    const appendFields = (container, fields) => {
+      for (const field of fields) {
+        const wrap = document.createElement("div");
+        wrap.className = "cfg-field";
+        const id = fieldId(field.path);
+
+        if (field.type === "bool") {
+          const lbl = document.createElement("label");
+          lbl.className = "inline";
+          lbl.htmlFor = id;
+          const inp = document.createElement("input");
+          inp.type = "checkbox";
+          inp.id = id;
+          lbl.appendChild(inp);
+          lbl.appendChild(document.createTextNode(field.label));
+          wrap.appendChild(lbl);
+        } else {
+          const lbl = document.createElement("label");
+          lbl.htmlFor = id;
+          lbl.textContent = field.label;
+          wrap.appendChild(lbl);
+
+          let inp;
+          if (field.type === "select") {
+            inp = document.createElement("select");
+            inp.id = id;
+            for (const opt of field.options) {
+              const o = document.createElement("option");
+              o.value = opt;
+              o.textContent = opt;
+              inp.appendChild(o);
+            }
+          } else if (field.type === "string-list") {
+            inp = document.createElement("textarea");
+            inp.id = id;
+            inp.spellcheck = false;
+          } else {
+            inp = document.createElement("input");
+            inp.id = id;
+            if (field.type === "number") {
+              inp.type = "number";
+              if (field.step != null) inp.step = String(field.step);
+            } else if (field.type === "password") {
+              inp.type = "password";
+              inp.autocomplete = "off";
+            } else {
+              inp.type = "text";
+            }
+          }
+          wrap.appendChild(inp);
+        }
+
+        const help = document.createElement("div");
+        help.className = "cfg-help";
+        help.textContent = field.help;
+        wrap.appendChild(help);
+        container.appendChild(wrap);
+      }
+    };
+
+    appendFields(card, sec.fields);
+    for (const sub of sec.subsections) {
+      const sh = document.createElement("div");
+      sh.className = "cfg-subhead";
+      sh.textContent = sub.name;
+      card.appendChild(sh);
+      appendFields(card, sub.fields);
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "cfg-section-actions";
+    const saveBtn = document.createElement("button");
+    saveBtn.textContent = "Save " + meta.title;
+    saveBtn.dataset.cfgSectionSave = sec.key;
+    saveBtn.onclick = () => saveConfigSection(sec.key);
+    actions.appendChild(saveBtn);
+    card.appendChild(actions);
+
+    root.appendChild(card);
+  }
+  configFormBuilt = true;
+}
+
+function renderConfigForm() {
+  if (!configFormBuilt) buildConfigForm();
+  populateFormFromConfig();
+}
+
+async function putConfig() {
+  const st = document.getElementById("config-status");
+  const r = await fetch(api("/api/config"), {
+    method: "PUT",
+    headers: Object.assign({ "Content-Type": "application/json" }, TOKEN ? { "X-Psxdh-Token": TOKEN } : {}),
+    body: JSON.stringify(config),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  st.textContent = "saved — restart psxdh to apply";
+}
+
+async function loadConfig() {
+  try {
+    config = await getJSON("/api/config?format=json");
+    renderConfigForm();
+  } catch (e) {
+    document.getElementById("config-status").textContent = "load error: " + e.message;
+  }
+}
+
+async function saveConfig() {
+  if (!configEditable) return;
+  const st = document.getElementById("config-status");
+  try {
+    readFormIntoConfig();
+    await putConfig();
+  } catch (e) { st.textContent = "save failed: " + e.message; }
+}
+
+async function saveConfigSection(sectionKey) {
+  if (!configEditable) return;
+  const st = document.getElementById("config-status");
+  try {
+    readFormIntoConfig();
+    await putConfig();
+    const title = (SECTION_META[sectionKey] || {}).title || sectionKey;
+    st.textContent = title + " saved — restart psxdh to apply";
+  } catch (e) { st.textContent = "save failed: " + e.message; }
+}
+
+async function loadStatus() {
+  try {
+    const s = await getJSON("/api/status");
+    document.getElementById("status").textContent =
+      `proxy ${s.proxy_listen} · ${s.files} files / ${s.basenames} titles · ` +
+      `${s.dropped_events} dropped` + (s.aria2_enabled ? " · aria2 on" : "") +
+      (s.cluster_enabled ? " · cluster master" : "");
+    const lanEl = document.getElementById("lan-ips");
+    const hintEl = document.getElementById("network-hint");
+    const port = s.proxy_port || "8080";
+    const ips = s.lan_ips || [];
+    if (ips.length) {
+      lanEl.textContent = ips.map(a => `${a.ip} (${a.interface}) · proxy :${port}`).join("  ·  ");
+      hintEl.textContent = ips.length > 1
+        ? "PS5 on a direct cable → use the IP on that interface. Open the dashboard from your phone using any listed IP."
+        : "";
+    } else {
+      lanEl.textContent = "";
+      hintEl.textContent = "";
+    }
+    if (s.cluster_enabled) document.getElementById("cluster-panel").style.display = "";
+    document.getElementById("config-panel").style.display = "";
+    configEditable = s.config_editable;
+    configPath = s.config_path || "";
+    if (configFormBuilt) updateConfigReadOnly();
+  } catch (e) { document.getElementById("status").textContent = "status error: " + e.message; }
+}
+
+function fmtSpeed(bps) {
+  if (!bps) return "0 B/s";
+  const u = ["B/s","KB/s","MB/s","GB/s"]; let i = 0; let v = bps;
+  while (v >= 1024 && i < u.length-1) { v /= 1024; i++; }
+  return v.toFixed(1) + " " + u[i];
+}
+
+async function loadCluster() {
+  const panel = document.getElementById("cluster-panel");
+  if (panel.style.display === "none") return;
+  try {
+    const snap = await getJSON("/api/cluster/progress");
+    const game = (snap.games && snap.games[0]) || null;
+    const overall = game ? `${game.have_parts}/${game.total_parts} parts` : "no game yet";
+    document.getElementById("cluster-summary").innerHTML =
+      `<b>${overall}</b> · accumulated speed <b>${fmtSpeed(snap.accumulated_speed_bps)}</b> · ` +
+      `${snap.done_parts} done / ${snap.assigned_parts} downloading / ${snap.pending_parts} pending`;
+    let html = "<table><tr><th>node</th><th>status</th><th>current part</th><th>speed</th></tr>";
+    for (const n of (snap.nodes || [])) {
+      const active = (n.jobs || []).find(j => j.state === "active");
+      const cur = active ? `${active.basename} (${active.total ? Math.round(100*active.completed/active.total) : 0}%)` : "—";
+      const cls = n.online ? "ok" : "failed";
+      html += `<tr><td>${n.name || n.base_url}</td><td><span class="pill ${cls}">${n.online ? "online" : "offline"}</span></td>`
+            + `<td>${cur}</td><td class="num">${fmtSpeed(n.speed_bps)}</td>`
+            + `<td><button class="ghost" onclick="removeNode('${n.id}')">remove</button></td></tr>`;
+    }
+    document.getElementById("cluster-nodes").innerHTML = html + "</table>";
+  } catch (e) { document.getElementById("cluster-nodes").innerHTML = `<p class="meta">${e.message}</p>`; }
+}
+
+async function addNode() {
+  const url = document.getElementById("node-url").value.trim();
+  if (!url) return;
+  try {
+    const r = await fetch(api("/api/cluster/nodes"), {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, TOKEN ? { "X-Psxdh-Token": TOKEN } : {}),
+      body: JSON.stringify({ base_url: url }),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    document.getElementById("node-url").value = "";
+    loadCluster();
+  } catch (e) { alert("add node: " + e.message); }
+}
+
+async function removeNode(id) {
+  await fetch(api("/api/cluster/nodes?id=" + encodeURIComponent(id)), {
+    method: "DELETE", headers: TOKEN ? { "X-Psxdh-Token": TOKEN } : {},
+  });
+  loadCluster();
+}
+
+async function discoverNodes() {
+  const el = document.getElementById("discovered");
+  el.innerHTML = '<p class="meta">browsing…</p>';
+  try {
+    const found = await getJSON("/api/cluster/discovered");
+    if (!found.length) { el.innerHTML = '<p class="meta">no nodes found on the LAN.</p>'; return; }
+    el.innerHTML = found.map(d =>
+      `<div class="row"><span>${d.instance} — ${d.base_url}</span>`
+      + `<button class="ghost" onclick="document.getElementById('node-url').value='${d.base_url}';addNode()">add</button></div>`).join("");
+  } catch (e) { el.innerHTML = `<p class="meta">${e.message}</p>`; }
+}
+
+const log = document.getElementById("log");
+function startStream() {
+  const es = new EventSource(api("/api/events"));
+  es.onmessage = (m) => {
+    const ev = JSON.parse(m.data);
+    const div = document.createElement("div");
+    const t = (ev.time || "").replace("T", " ").replace(/\+.*/, "");
+    div.innerHTML = `<span class="meta">${t}</span> <span class="kind">${ev.kind}</span> ${ev.url}`;
+    log.prepend(div);
+    while (log.children.length > 200) log.removeChild(log.lastChild);
+  };
+  es.onerror = () => { /* EventSource auto-reconnects */ };
+}
+
+async function pushAria2(url) {
+  try {
+    const r = await fetch(api("/api/handoff/aria2"), {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, TOKEN ? { "X-Psxdh-Token": TOKEN } : {}),
+      body: JSON.stringify({ url }),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    alert("Sent to aria2 (gid " + (await r.json()).gid + ")");
+  } catch (e) { alert("aria2 error: " + e.message); }
+}
+
+function exportURL(format, title) {
+  const params = new URLSearchParams({ format });
+  if (title) params.set("title", title);
+  if (TOKEN) params.set("token", TOKEN);
+  return "/api/export?" + params.toString();
+}
+
+async function exportSession(title, format) {
+  await downloadExport(exportURL(format, title));
+}
+
+async function exportAll(format) {
+  await downloadExport(exportURL(format, ""));
+}
+
+async function downloadExport(url) {
+  try {
+    const r = await fetch(url, { headers: TOKEN ? { "X-Psxdh-Token": TOKEN } : {} });
+    if (!r.ok) throw new Error((await r.text()) || ("HTTP " + r.status));
+    const blob = await r.blob();
+    const cd = r.headers.get("Content-Disposition") || "";
+    const m = cd.match(/filename="?([^";]+)"?/i);
+    const name = m ? m[1] : "psxdh-export.txt";
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 0);
+  } catch (e) { alert("export failed: " + e.message); }
+}
+
+async function importCapture(ev) {
+  const input = ev.target;
+  const file = input.files && input.files[0];
+  if (!file) return;
+  const fd = new FormData();
+  fd.append("capture", file);
+  try {
+    const r = await fetch("/api/jobs/import?enumerate=true", {
+      method: "POST",
+      headers: TOKEN ? { "X-Psxdh-Token": TOKEN } : {},
+      body: fd,
+    });
+    if (!r.ok) throw new Error((await r.text()) || ("HTTP " + r.status));
+    const result = await r.json();
+    alert("Imported " + (result.parts || 0) + " parts across " + (result.titles || 0) + " title(s); " + (result.submitted || 0) + " queued for cluster");
+    loadSessions();
+  } catch (e) {
+    alert("import failed: " + e.message);
+  } finally {
+    input.value = "";
+  }
+}
+
+async function loadSessions() {
+  const el = document.getElementById("sessions");
+  try {
+    const sessions = await getJSON("/api/sessions");
+    if (!sessions.length) { el.innerHTML = '<p class="meta">No captures yet.</p>'; return; }
+    el.innerHTML = "";
+    for (const s of sessions) {
+      const h = document.createElement("div");
+      h.className = "title";
+      h.style.display = "flex";
+      h.style.alignItems = "center";
+      h.style.justifyContent = "space-between";
+      h.style.gap = "10px";
+      const label = document.createElement("span");
+      label.textContent = `${s.title}  (${s.local_count}/${s.total_count} local)`;
+      h.appendChild(label);
+      const exportBox = document.createElement("span");
+      exportBox.style.display = "inline-flex";
+      exportBox.style.gap = "6px";
+      const aria2Btn = document.createElement("button");
+      aria2Btn.className = "ghost";
+      aria2Btn.textContent = "Export aria2";
+      aria2Btn.onclick = () => exportSession(s.title, "aria2");
+      const txtBtn = document.createElement("button");
+      txtBtn.className = "ghost";
+      txtBtn.textContent = "Export txt";
+      txtBtn.onclick = () => exportSession(s.title, "txt");
+      exportBox.appendChild(aria2Btn);
+      exportBox.appendChild(txtBtn);
+      h.appendChild(exportBox);
+      el.appendChild(h);
+      const tbl = document.createElement("table");
+      tbl.innerHTML = "<tr><th>part</th><th>kind</th><th>state</th><th></th></tr>";
+      for (const p of s.parts) {
+        const tr = document.createElement("tr");
+        let state = p.local ? `<span class="pill ok">local</span>` : `<span class="pill pending">pending</span>`;
+        if (p.verified === "failed") state = `<span class="pill failed">corrupt</span>`;
+        else if (p.verified === "ok") state = `<span class="pill ok">verified</span>`;
+        tr.innerHTML = `<td>${p.basename}</td><td>${p.kind}</td><td>${state}</td>`;
+        const td = document.createElement("td");
+        const b = document.createElement("button");
+        b.textContent = "→ aria2"; b.onclick = () => pushAria2(p.url);
+        td.appendChild(b); tr.appendChild(td);
+        tbl.appendChild(tr);
+      }
+      el.appendChild(tbl);
+    }
+  } catch (e) { el.innerHTML = `<p class="meta">error: ${e.message}</p>`; }
+}
+
+async function loadDNS() {
+  const el = document.getElementById("dns");
+  try {
+    const stats = await getJSON("/api/dns");
+    if (!stats.length) { el.innerHTML = '<p class="meta">DNS health ranking is off (network.dns.health.enabled).</p>'; return; }
+    let html = "<table><tr><th>resolver</th><th>latency</th><th>ok/fail</th></tr>";
+    for (const s of stats) {
+      const lat = s.ewma_ms ? s.ewma_ms.toFixed(0) + "ms" : "—";
+      const cls = s.consecutive_failures > 0 ? "failed" : "ok";
+      html += `<tr><td><span class="pill ${cls}">${s.name}</span></td><td class="num">${lat}</td><td class="num">${s.successes}/${s.failures}</td></tr>`;
+    }
+    el.innerHTML = html + "</table>";
+  } catch (e) { el.innerHTML = `<p class="meta">error: ${e.message}</p>`; }
+}
+
+async function loadDoctor() {
+  const el = document.getElementById("doctor");
+  el.innerHTML = '<p class="meta">probing CDN hosts…</p>';
+  try {
+    const rep = await getJSON("/api/doctor");
+    let html = "<table><tr><th>host</th><th>TLS</th><th>latency</th></tr>";
+    for (const h of (rep.Hosts || [])) {
+      const cls = h.TLSOK ? "ok" : "failed";
+      const note = h.Err ? h.Err : (h.TLSOK ? "ok" : "fail");
+      html += `<tr><td>${h.Host}</td><td><span class="pill ${cls}">${note}</span></td><td class="num">${Math.round((h.Latency||0)/1e6)}ms</td></tr>`;
+    }
+    el.innerHTML = html + "</table>";
+  } catch (e) { el.innerHTML = `<p class="meta">error: ${e.message}</p>`; }
+}
+
+loadStatus().then(loadConfig);
+startStream();
+loadSessions();
+setInterval(loadStatus, 5000);
+setInterval(loadSessions, 8000);
+setInterval(loadCluster, 2000);
+</script>
+</body>
+</html>

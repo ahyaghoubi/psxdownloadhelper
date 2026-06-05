@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -12,13 +13,16 @@ import (
 )
 
 // Default returns a Config populated with the defaults documented in
-// docs/configuration.md. Every resilience-layer feature ships off by
-// default so the proxy behaves exactly as it did before ADR 0003 unless
-// the user opts in.
+// docs/configuration.md. Defaults target PS5 on Iranian networks: dashboard
+// on, cluster master with master-as-node, DoH+UDP resolvers, forward retry,
+// partial cache, and integrity verification. Users elsewhere can override via
+// YAML.
 func Default() *Config {
 	return &Config{
 		Proxy: ProxyConfig{Listen: "0.0.0.0:8080"},
-		Admin: AdminConfig{Listen: "127.0.0.1:8081", AutoOpen: false},
+		// Dashboard binds the LAN by default so a phone can reach it; a token is
+		// required for any non-loopback bind and auto-generated at startup when empty.
+		Admin: AdminConfig{Enabled: true, Listen: "0.0.0.0:8081", AutoOpen: false},
 		Library: LibraryConfig{
 			Dir:            "~/Downloads/psxdh",
 			Layout:         "basename",
@@ -26,7 +30,7 @@ func Default() *Config {
 			StableSettleMs: 2000,
 			IgnoreSuffixes: []string{".part", ".fdmdownload", ".tmp", ".crdownload"},
 		},
-		Match: MatchConfig{PS4: true, PS5: true},
+		Match: MatchConfig{PS4: false, PS5: true},
 		Capture: CaptureConfig{
 			LogIgnored:         false,
 			ExportFormats:      []string{"txt", "fdm", "aria2"},
@@ -35,30 +39,49 @@ func Default() *Config {
 		},
 		Handoff: HandoffConfig{
 			FDM: FDMHandoffConfig{Enabled: true, FallbackToClipboard: true},
+			Aria2: Aria2HandoffConfig{
+				Enabled:  false,
+				RPCURL:   "http://127.0.0.1:6800/jsonrpc",
+				AutoPush: false,
+			},
 		},
 		Forward: ForwardConfig{
 			Mode:             "auto",
 			PassthroughHTTPS: true,
 			Retry: RetryConfig{
-				MaxAttempts:      1,
-				InitialBackoffMs: 200,
-				MaxBackoffMs:     5000,
+				MaxAttempts:      4,
+				InitialBackoffMs: 250,
+				MaxBackoffMs:     4000,
 				Multiplier:       2.0,
 				Jitter:           0.2,
 			},
 			PartialCache: PartialCacheConfig{
-				Enabled:      false,
+				Enabled:      true,
 				MinSizeBytes: 1 << 20, // 1 MiB
+				Resume:       true,
 			},
 		},
 		Network: NetworkConfig{
 			DNS: DNSConfig{
-				Mode:            "system",
+				Mode: "doh+udp",
+				Resolvers: []string{
+					"1.1.1.1",
+					"9.9.9.9",
+					"8.8.8.8",
+					"8.8.4.4",
+					"178.22.122.100",
+					"185.51.200.2",
+					"https://dns.electrotm.org/dns-query",
+					"https://free.shecan.ir/dns-query",
+					"https://1.1.1.1/dns-query",
+					"https://dns.google/dns-query",
+				},
 				TimeoutMs:       1500,
 				CacheTTLs:       300,
 				CacheMaxEntries: 4096,
+				Health:          DNSHealthConfig{Enabled: true, ReprobeIntervalMs: 60000},
 			},
-			PreferIPv4:    false,
+			PreferIPv4:    true,
 			DialTimeoutMs: 10000,
 			UpstreamProxy: UpstreamProxyConfig{Enabled: false},
 			Circuit: CircuitConfig{
@@ -68,9 +91,53 @@ func Default() *Config {
 			},
 			Bandwidth: BandwidthConfig{ForwardBPS: 0, BurstBytes: 0},
 		},
-		Verify: VerifyConfig{CRC: false},
-		Log:    LogConfig{Level: "info", JSON: false},
+		Verify: VerifyConfig{CRC: false, OnStable: true, RequireSizeMatch: false},
+		MDNS:   MDNSConfig{Enabled: false, InstanceName: "psxdh"},
+		Downloader: DownloaderConfig{
+			Engine:               "aria2",
+			RPCPort:              6800,
+			ConnectionsPerServer: 8,
+			Split:                8,
+			MaxConcurrent:        4,
+		},
+		Cluster: ClusterConfig{
+			Enabled:      true,
+			Role:         "master",
+			Bind:         "0.0.0.0:8082",
+			MasterAsNode: true,
+		},
+		Jobs: JobsConfig{ImportEnumerate: true},
+		Log:  LogConfig{Level: "info", JSON: false},
 	}
+}
+
+// DefaultConfigPath returns the path used for dashboard edits when --config is
+// not passed. Settings save here on first use; if the file already exists it is
+// loaded at startup.
+func DefaultConfigPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
+	}
+	return filepath.Join(home, ".config", "psxdh", "config.yaml"), nil
+}
+
+// ResolveConfigPath maps the --config flag to load and persist paths. When flag
+// is empty, persistPath is always DefaultConfigPath(); loadPath is that file when
+// it exists, otherwise "" (built-in defaults). This keeps zero-config startup
+// while letting the dashboard write settings without requiring --config.
+func ResolveConfigPath(flag string) (loadPath, persistPath string, err error) {
+	if flag != "" {
+		return flag, flag, nil
+	}
+	persistPath, err = DefaultConfigPath()
+	if err != nil {
+		return "", "", err
+	}
+	if _, statErr := os.Stat(persistPath); statErr == nil {
+		loadPath = persistPath
+	}
+	return loadPath, persistPath, nil
 }
 
 // Load reads and validates a YAML config file. An empty path returns Default().
@@ -86,6 +153,36 @@ func Load(path string) (*Config, error) {
 	}
 	if err := yaml.Unmarshal(data, c); err != nil {
 		return nil, fmt.Errorf("parse config %q: %w", path, err)
+	}
+	return c, c.expandAndValidate()
+}
+
+// Marshal serialises the config back to YAML. Used by the dashboard's config
+// editor to persist edits to config.yaml. The round-trip Load→Marshal→Load is
+// stable for every field.
+func (c *Config) Marshal() ([]byte, error) {
+	return yaml.Marshal(c)
+}
+
+// ParseAndValidate overlays YAML data onto the defaults and validates the
+// result, without reading or writing any file. The dashboard config editor uses
+// it to check an edit before persisting it.
+func ParseAndValidate(data []byte) (*Config, error) {
+	c := Default()
+	if err := yaml.Unmarshal(data, c); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	return c, c.expandAndValidate()
+}
+
+// ParseJSONAndValidate is the JSON twin of ParseAndValidate. The dashboard's
+// structured config editor posts JSON; this overlays it onto the defaults and
+// validates the result so a partial form submission still produces a complete
+// config.
+func ParseJSONAndValidate(data []byte) (*Config, error) {
+	c := Default()
+	if err := json.Unmarshal(data, c); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
 	}
 	return c, c.expandAndValidate()
 }
@@ -126,6 +223,20 @@ func (c *Config) expandPaths() error {
 		}
 		c.Capture.Persist.Path = expanded
 	}
+	if c.Jobs.ImportOnStart != "" {
+		expanded, err = resolveTilde(c.Jobs.ImportOnStart)
+		if err != nil {
+			return err
+		}
+		c.Jobs.ImportOnStart = expanded
+	}
+	if c.Jobs.StatePath != "" {
+		expanded, err = resolveTilde(c.Jobs.StatePath)
+		if err != nil {
+			return err
+		}
+		c.Jobs.StatePath = expanded
+	}
 	return nil
 }
 
@@ -164,12 +275,33 @@ func (c *Config) Validate() error {
 	if err := validatePersist(c.Capture.Persist); err != nil {
 		return err
 	}
+	if c.Handoff.Aria2.Enabled && c.Handoff.Aria2.RPCURL == "" {
+		return errors.New("handoff.aria2: rpc_url is required when enabled")
+	}
+	if err := validateCluster(c.Cluster); err != nil {
+		return err
+	}
+	if err := validateDownloader(c.Downloader); err != nil {
+		return err
+	}
 	switch c.Log.Level {
 	case "debug", "info", "warn", "error":
 	default:
 		return fmt.Errorf("log.level: must be one of debug|info|warn|error, got %q", c.Log.Level)
 	}
 	return nil
+}
+
+// NeedsEmbeddedDownloader reports whether this config starts the managed
+// aria2c/HTTP downloader (psxdh node, or proxy with cluster.master_as_node).
+func (c *Config) NeedsEmbeddedDownloader() bool {
+	if !c.Cluster.Enabled {
+		return false
+	}
+	if c.Cluster.Role == "slave" {
+		return true
+	}
+	return c.Cluster.MasterAsNode
 }
 
 func validateRetry(r RetryConfig) error {
@@ -216,6 +348,9 @@ func validateNetwork(n NetworkConfig) error {
 	if n.DNS.CacheMaxEntries < 0 {
 		return fmt.Errorf("network.dns.cache_max_entries: must be >= 0, got %d", n.DNS.CacheMaxEntries)
 	}
+	if n.DNS.Health.ReprobeIntervalMs < 0 {
+		return fmt.Errorf("network.dns.health.reprobe_interval_ms: must be >= 0, got %d", n.DNS.Health.ReprobeIntervalMs)
+	}
 	if n.DialTimeoutMs < 0 {
 		return fmt.Errorf("network.dial_timeout_ms: must be >= 0, got %d", n.DialTimeoutMs)
 	}
@@ -241,6 +376,45 @@ func validateNetwork(n NetworkConfig) error {
 	}
 	if n.Bandwidth.BurstBytes < 0 {
 		return fmt.Errorf("network.bandwidth.burst_bytes: must be >= 0, got %d", n.Bandwidth.BurstBytes)
+	}
+	return nil
+}
+
+func validateCluster(c ClusterConfig) error {
+	if !c.Enabled {
+		return nil
+	}
+	switch c.Role {
+	case "master", "slave":
+	default:
+		return fmt.Errorf("cluster.role: must be 'master' or 'slave', got %q", c.Role)
+	}
+	if err := validateListen(c.Bind); err != nil {
+		return fmt.Errorf("cluster.bind: %w", err)
+	}
+	if c.Role == "slave" && c.MasterURL == "" {
+		return errors.New("cluster.master_url is required for a slave node")
+	}
+	return nil
+}
+
+func validateDownloader(d DownloaderConfig) error {
+	switch d.Engine {
+	case "", "aria2":
+	default:
+		return fmt.Errorf("downloader.engine: only 'aria2' is supported, got %q", d.Engine)
+	}
+	if d.RPCPort < 0 || d.RPCPort > 65535 {
+		return fmt.Errorf("downloader.rpc_port: must be 0-65535, got %d", d.RPCPort)
+	}
+	if d.ConnectionsPerServer < 0 {
+		return fmt.Errorf("downloader.connections_per_server: must be >= 0, got %d", d.ConnectionsPerServer)
+	}
+	if d.Split < 0 {
+		return fmt.Errorf("downloader.split: must be >= 0, got %d", d.Split)
+	}
+	if d.MaxConcurrent < 0 {
+		return fmt.Errorf("downloader.max_concurrent: must be >= 0, got %d", d.MaxConcurrent)
 	}
 	return nil
 }

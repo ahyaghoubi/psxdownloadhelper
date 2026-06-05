@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -17,107 +18,217 @@ import (
 // library.dir/.psxdh-partial/<basename>, and atomically renames to
 // library.dir/<basename> when the response completes cleanly.
 //
-// v1 scope (see docs/decisions/0003-network-resilience.md):
-//   - Only non-Range GETs are eligible (clients sending Range want a
+// Scope (see docs/decisions/0003-network-resilience.md and
+// docs/network-resilience.md):
+//   - Only non-Range GETs from the client are cached (a client Range wants a
 //     specific slice, not the whole file).
-//   - We never resume from a previous partial. A failed forward leaves
-//     the .partial file on disk as a debugging breadcrumb; the next
-//     forward overwrites it.
-//   - We honour Content-Length when present: if we wrote at least
-//     MinSize bytes AND the byte count matches Content-Length, the
-//     rename happens. Otherwise the partial is left behind.
+//   - We honour Content-Length: the rename happens only when the byte count
+//     matches.
+//   - When resume is enabled, a `.partial` left behind by a dropped forward is
+//     continued on the next eligible forward by issuing an upstream
+//     Range/If-Range request for the remainder — gated on the upstream
+//     validators (ETag / Last-Modified / total size) still matching. On any
+//     mismatch we fall back to a fresh download; we never stitch bytes from two
+//     different objects.
 type partialCache struct {
 	libDir  string
 	minSize int64
+	resume  bool
 	logger  *slog.Logger
 
 	mu       sync.Mutex
 	inflight map[string]struct{} // basenames currently being written
 }
 
-func newPartialCache(libDir string, minSize int64, logger *slog.Logger) *partialCache {
+func newPartialCache(libDir string, minSize int64, resume bool, logger *slog.Logger) *partialCache {
 	return &partialCache{
 		libDir:   libDir,
 		minSize:  minSize,
+		resume:   resume,
 		logger:   logger,
 		inflight: make(map[string]struct{}),
 	}
 }
 
-// Eligible reports whether (req, resp) should be tee'd. The conditions are:
-//   - GET method
-//   - No Range header on the request
-//   - Response is 200 OK with a Content-Length we can parse
-//   - URL path ends in a filename that doesn't collide with an in-flight
-//     write
-func (p *partialCache) Eligible(req *http.Request, resp *http.Response) bool {
+// forwardPlan is the pre-forward decision for a candidate request. A nil plan
+// means "forward normally, do not cache". resumeFrom > 0 means a resumable
+// `.partial` was found and the forward should request the remainder.
+type forwardPlan struct {
+	name       string
+	resumeFrom int64
+	validator  string // If-Range value
+	meta       *partialMeta
+}
+
+// teeResult describes how forward should stream the upstream response to the
+// client. When ok is false the response is streamed verbatim without caching.
+// When err is non-nil the forward must abort (the partial state was invalid
+// and has been discarded); the client should retry.
+type teeResult struct {
+	reader        io.Reader
+	done          func(error)
+	status        int   // client-facing status code
+	contentLength int64 // when > 0, override Content-Length and drop Content-Range
+	ok            bool
+	err           error
+}
+
+// partDir returns the hidden directory holding in-progress downloads.
+func (p *partialCache) partDir() string { return filepath.Join(p.libDir, ".psxdh-partial") }
+
+// Plan inspects an incoming request and decides whether it is a partial-cache
+// candidate, and whether a resumable `.partial` already exists for it.
+func (p *partialCache) Plan(req *http.Request) *forwardPlan {
 	if p == nil || req.Method != http.MethodGet {
-		return false
+		return nil
 	}
 	if req.Header.Get("Range") != "" {
-		return false
-	}
-	if resp.StatusCode != http.StatusOK {
-		return false
-	}
-	if resp.ContentLength <= 0 {
-		return false
-	}
-	if p.minSize > 0 && resp.ContentLength < p.minSize {
-		return false
+		return nil
 	}
 	name := basenameFromURL(req.URL)
 	if name == "" {
-		return false
+		return nil
 	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if _, busy := p.inflight[name]; busy {
-		return false
+	_, busy := p.inflight[name]
+	p.mu.Unlock()
+	if busy {
+		return nil
 	}
 	if _, err := os.Stat(filepath.Join(p.libDir, name)); err == nil {
-		// File is already in the library — no need to cache again.
-		return false
+		return nil // already in the library
 	}
-	return true
+	plan := &forwardPlan{name: name}
+	if p.resume {
+		if m, from := p.resumeState(req, name); m != nil {
+			plan.resumeFrom = from
+			plan.validator = m.validator()
+			plan.meta = m
+		}
+	}
+	return plan
 }
 
-// Tee returns an io.Reader that yields the same bytes resp.Body would, while
-// also writing them to a temp file. The caller must drain the returned reader
-// in full (e.g. via io.Copy to the client) and then call done(err) where
-// err is nil on success and non-nil on any client-side write failure.
-func (p *partialCache) Tee(req *http.Request, resp *http.Response) (io.Reader, func(error), error) {
-	name := basenameFromURL(req.URL)
-	partDir := filepath.Join(p.libDir, ".psxdh-partial")
-	if err := os.MkdirAll(partDir, 0o755); err != nil {
-		return nil, nil, fmt.Errorf("partial: mkdir %s: %w", partDir, err)
+// resumeState returns the saved meta and on-disk byte count when a valid,
+// resumable `.partial` exists for name; otherwise (nil, 0).
+func (p *partialCache) resumeState(req *http.Request, name string) (*partialMeta, int64) {
+	m, err := readMeta(filepath.Join(p.partDir(), name+".partial.meta"))
+	if err != nil || m == nil {
+		return nil, 0
 	}
-	partPath := filepath.Join(partDir, name+".partial")
+	if m.validator() == "" || m.URL != req.URL.String() || m.ContentLength <= 0 {
+		return nil, 0
+	}
+	fi, err := os.Stat(filepath.Join(p.partDir(), name+".partial"))
+	if err != nil {
+		return nil, 0 // meta but no .partial → fresh
+	}
+	n := fi.Size()
+	if n <= 0 || n >= m.ContentLength {
+		return nil, 0 // empty or already (over)complete → fresh
+	}
+	return m, n
+}
+
+// Begin reconciles the upstream response against the plan and returns how to
+// stream it to the client. It is the post-response counterpart to Plan.
+func (p *partialCache) Begin(plan *forwardPlan, req *http.Request, resp *http.Response) teeResult {
+	if plan == nil {
+		return teeResult{}
+	}
+	if plan.resumeFrom > 0 {
+		switch resp.StatusCode {
+		case http.StatusPartialContent:
+			return p.beginResume(plan, resp)
+		case http.StatusOK:
+			// Server ignored our Range, or the validator changed (If-Range
+			// downgraded to a full body). Treat as a fresh full download.
+			return p.beginFresh(req, resp, plan.name)
+		default:
+			return teeResult{} // error response — stream verbatim, keep partial
+		}
+	}
+	return p.beginFresh(req, resp, plan.name)
+}
+
+// beginFresh starts a brand-new tee-to-disk for a 200 OK full response.
+func (p *partialCache) beginFresh(req *http.Request, resp *http.Response, name string) teeResult {
+	if resp.StatusCode != http.StatusOK || resp.ContentLength <= 0 {
+		return teeResult{}
+	}
+	if p.minSize > 0 && resp.ContentLength < p.minSize {
+		return teeResult{}
+	}
+	if err := os.MkdirAll(p.partDir(), 0o755); err != nil {
+		p.logger.Warn("partial: mkdir failed", "err", err)
+		return teeResult{}
+	}
+	partPath := filepath.Join(p.partDir(), name+".partial")
 	f, err := os.Create(partPath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("partial: create %s: %w", partPath, err)
+		p.logger.Warn("partial: create failed", "basename", name, "err", err)
+		return teeResult{}
 	}
+	// Record validators up front so a dropped download is resumable next run.
+	meta := metaFromResponse(req.URL.String(), name, resp)
+	if err := writeMeta(filepath.Join(p.partDir(), name+".partial.meta"), meta); err != nil {
+		p.logger.Warn("partial: meta write failed", "basename", name, "err", err)
+	}
+	p.markInflight(name)
+	reader := io.TeeReader(resp.Body, f)
+	done := p.finisher(name, partPath, []io.Closer{f}, meta.ContentLength)
+	return teeResult{reader: reader, done: done, status: http.StatusOK, ok: true}
+}
 
-	p.mu.Lock()
-	p.inflight[name] = struct{}{}
-	p.mu.Unlock()
+// beginResume continues an existing `.partial` from a 206 response carrying the
+// remaining bytes. The client receives a synthesised 200 with the full body.
+func (p *partialCache) beginResume(plan *forwardPlan, resp *http.Response) teeResult {
+	total := parseContentRangeTotal(resp.Header.Get("Content-Range"))
+	if total != plan.meta.ContentLength {
+		// The object changed underneath us despite If-Range; the on-disk prefix
+		// is no longer trustworthy. Discard and force a fresh download.
+		p.discard(plan.name)
+		return teeResult{err: fmt.Errorf("partial: resume validator mismatch (got total %d, want %d)", total, plan.meta.ContentLength)}
+	}
+	partPath := filepath.Join(p.partDir(), plan.name+".partial")
+	rd, err := os.Open(partPath)
+	if err != nil {
+		return teeResult{}
+	}
+	wr, err := os.OpenFile(partPath, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		_ = rd.Close()
+		return teeResult{}
+	}
+	p.markInflight(plan.name)
+	prefix := io.LimitReader(rd, plan.resumeFrom)
+	reader := io.MultiReader(prefix, io.TeeReader(resp.Body, wr))
+	done := p.finisher(plan.name, partPath, []io.Closer{wr, rd}, plan.meta.ContentLength)
+	p.logger.Info("partial: resuming download", "basename", plan.name, "from", plan.resumeFrom, "total", total)
+	return teeResult{reader: reader, done: done, status: http.StatusOK, contentLength: plan.meta.ContentLength, ok: true}
+}
 
-	// MultiWriter writes every chunk both to the client and to disk.
-	body := resp.Body
-	reader := io.TeeReader(body, f)
-
-	expected := resp.ContentLength
-	done := func(cause error) {
-		_ = f.Sync()
-		closeErr := f.Close()
-
-		p.mu.Lock()
-		delete(p.inflight, name)
-		p.mu.Unlock()
+// finisher returns the done callback that closes handles and, on a clean
+// completion (size matches expected), atomically promotes the file into the
+// library and removes the sidecar. On failure the `.partial` and its meta are
+// kept so the next forward can resume.
+func (p *partialCache) finisher(name, partPath string, closers []io.Closer, expected int64) func(error) {
+	return func(cause error) {
+		for _, c := range closers {
+			if sf, ok := c.(interface{ Sync() error }); ok {
+				_ = sf.Sync()
+			}
+		}
+		var closeErr error
+		for _, c := range closers {
+			if err := c.Close(); err != nil && closeErr == nil {
+				closeErr = err
+			}
+		}
+		p.clearInflight(name)
 
 		if cause != nil {
-			p.logger.Warn("partial: forward errored; keeping .partial",
-				"basename", name, "err", cause)
+			p.logger.Warn("partial: forward errored; keeping .partial for resume", "basename", name, "err", cause)
 			return
 		}
 		if closeErr != nil {
@@ -130,20 +241,55 @@ func (p *partialCache) Tee(req *http.Request, resp *http.Response) (io.Reader, f
 			return
 		}
 		if fi.Size() != expected {
-			p.logger.Warn("partial: size mismatch (probably truncated)",
+			p.logger.Warn("partial: size mismatch (probably truncated); keeping for resume",
 				"basename", name, "got", fi.Size(), "want", expected)
 			return
 		}
 		final := filepath.Join(p.libDir, name)
 		if err := os.Rename(partPath, final); err != nil {
-			p.logger.Warn("partial: rename failed",
-				"basename", name, "err", err, "src", partPath, "dst", final)
+			p.logger.Warn("partial: rename failed", "basename", name, "err", err, "src", partPath, "dst", final)
 			return
 		}
-		p.logger.Info("partial: promoted to library",
-			"basename", name, "size", fi.Size())
+		_ = os.Remove(filepath.Join(p.partDir(), name+".partial.meta"))
+		p.logger.Info("partial: promoted to library", "basename", name, "size", fi.Size())
 	}
-	return reader, done, nil
+}
+
+func (p *partialCache) markInflight(name string) {
+	p.mu.Lock()
+	p.inflight[name] = struct{}{}
+	p.mu.Unlock()
+}
+
+func (p *partialCache) clearInflight(name string) {
+	p.mu.Lock()
+	delete(p.inflight, name)
+	p.mu.Unlock()
+}
+
+// discard removes the `.partial` and its sidecar so the next forward starts fresh.
+func (p *partialCache) discard(name string) {
+	_ = os.Remove(filepath.Join(p.partDir(), name+".partial"))
+	_ = os.Remove(filepath.Join(p.partDir(), name+".partial.meta"))
+}
+
+// parseContentRangeTotal extracts Total from a "bytes start-end/Total" header.
+// Returns -1 when absent or unparseable (so it never accidentally equals a
+// real Content-Length).
+func parseContentRangeTotal(h string) int64 {
+	i := strings.LastIndex(h, "/")
+	if i < 0 {
+		return -1
+	}
+	total := strings.TrimSpace(h[i+1:])
+	if total == "" || total == "*" {
+		return -1
+	}
+	n, err := strconv.ParseInt(total, 10, 64)
+	if err != nil {
+		return -1
+	}
+	return n
 }
 
 // basenameFromURL extracts the trailing filename component of u's path. It

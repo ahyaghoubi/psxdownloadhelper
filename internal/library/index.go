@@ -34,6 +34,19 @@ const (
 	LayoutPerTitle Layout = "per-title"
 )
 
+// VerifyState is the integrity status of an indexed file. See internal/verify.
+type VerifyState uint8
+
+const (
+	// VerifyUnchecked: no `.crc` sidecar seen, or verification not enabled.
+	VerifyUnchecked VerifyState = iota
+	// VerifyOK: a `.crc` sidecar matched the file's digest.
+	VerifyOK
+	// VerifyFailed: a `.crc` sidecar was present but the digest mismatched
+	// (or the file could not be read). The proxy must not serve this file.
+	VerifyFailed
+)
+
 // Index is a concurrent-safe in-memory catalogue of files in the library
 // directory, keyed by basename. It is populated by an initial walk and
 // kept current by Watcher.
@@ -41,7 +54,9 @@ type Index struct {
 	mu         sync.RWMutex
 	root       string
 	layout     Layout
-	byBasename map[string][]string // basename → absolute paths
+	byBasename map[string][]string    // basename → absolute paths
+	verify     map[string]VerifyState // absolute path → integrity status
+	expected   map[string]int64       // basename → upstream Content-Length
 }
 
 // NewIndex builds an Index by walking root once. The walk includes every
@@ -55,6 +70,8 @@ func NewIndex(root string, layout Layout) (*Index, error) {
 		root:       abs,
 		layout:     layout,
 		byBasename: make(map[string][]string),
+		verify:     make(map[string]VerifyState),
+		expected:   make(map[string]int64),
 	}
 	if _, err := os.Stat(abs); err != nil {
 		if os.IsNotExist(err) {
@@ -117,9 +134,44 @@ func (i *Index) Remove(p string) {
 	}
 	if len(out) == 0 {
 		delete(i.byBasename, base)
+	} else {
+		i.byBasename[base] = out
+	}
+	delete(i.verify, p)
+}
+
+// SetVerifyState records the integrity status of an indexed file path.
+func (i *Index) SetVerifyState(p string, s VerifyState) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.verify[p] = s
+}
+
+// VerifyStateOf returns the integrity status of a path (VerifyUnchecked if
+// the path was never verified).
+func (i *Index) VerifyStateOf(p string) VerifyState {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.verify[p]
+}
+
+// SetExpectedSize records the upstream Content-Length observed for a basename,
+// so the serve path can refuse a local file whose size disagrees.
+func (i *Index) SetExpectedSize(basename string, size int64) {
+	if size <= 0 {
 		return
 	}
-	i.byBasename[base] = out
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.expected[basename] = size
+}
+
+// ExpectedSize returns the recorded upstream size for a basename, if any.
+func (i *Index) ExpectedSize(basename string) (int64, bool) {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	n, ok := i.expected[basename]
+	return n, ok
 }
 
 // Resolve implements Resolver. It returns ok=false when nothing matches or
@@ -160,6 +212,15 @@ func (i *Index) Resolve(u *url.URL) (string, bool) {
 		}
 	}
 	return "", false // ambiguous
+}
+
+// HasBasename reports whether any indexed file has the given basename. The
+// cluster master uses this as the authority on "do we already have this part?"
+// — true whether a slave pushed it or it was dropped in manually.
+func (i *Index) HasBasename(name string) bool {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return len(i.byBasename[name]) > 0
 }
 
 // Stats returns counts useful for the admin dashboard.

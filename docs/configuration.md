@@ -50,19 +50,25 @@ psxdh proxy --config /etc/psxdh/config.yaml
 psxdh proxy --config config.yaml --log-level debug
 ```
 
-On start, the proxy prints a banner with the LAN IP, listen address, library
-root, and rule count so you can verify your console will be able to reach it:
+On start, the proxy prints a banner with every LAN IPv4 address (interface
+name in parentheses), the listen address, library root, and rule count. When
+the PC has multiple interfaces — common with a PS5 on a direct Ethernet cable
+while the PC uses Wi‑Fi — point the console proxy at the IP on the interface
+the cable is plugged into. See [README.md](../README.md#ps5-direct-ethernet-cable-to-pc).
 
 ```
 psxdh v0.1.0
-  LAN IP:        192.168.1.42
+  LAN IPs:
+    192.168.2.1    (en8)
+    192.168.1.42   (en0)
   proxy listen:  0.0.0.0:8080
-  admin listen:  http://127.0.0.1:8081/
+  dashboard:     http://192.168.1.42:8081/?token=…
   library dir:   /home/me/Downloads/psxdh
   library layout: basename
   match rules:   8
 
-Point your console's HTTP proxy at: 192.168.1.42:8080
+Point your PS5 proxy at the IP on the interface it is connected to
+  (e.g. 192.168.2.1:8080 for a direct cable; 192.168.1.42:8080 on a shared router).
 Press Ctrl-C to shut down.
 ```
 
@@ -70,14 +76,21 @@ Press Ctrl-C to shut down.
 
 ## config.yaml reference
 
+Defaults target **PS5 on Iranian networks**: dashboard on, cluster master with
+`master_as_node`, DoH+UDP resolvers with health ranking, forward retry, partial
+cache, and integrity verification. Override any field in a local `config.yaml`.
+
 Full schema with default values:
 
 ```yaml
 proxy:
   listen: "0.0.0.0:8080"          # console points here
 
-admin:
-  listen: "127.0.0.1:8081"        # dashboard + REST/WebSocket (Phase 2)
+admin:                            # embedded web dashboard (the GUI)
+  enabled: true                   # on by default; set false for headless
+  listen: "0.0.0.0:8081"          # LAN-reachable so a phone can open it
+  token: ""                       # required for non-loopback binds; auto-
+                                  # generated and printed in the banner when empty
   auto_open: false                # open the dashboard URL on startup
 
 library:
@@ -92,8 +105,8 @@ library:
     - ".crdownload"
 
 match:
-  ps4: true                       # load embedded PS4 rule pack
-  ps5: true                       # load embedded PS5 rule pack
+  ps4: false                      # load embedded PS4 rule pack
+  ps5: true                       # load embedded PS5 rule pack (default on)
   rules_dir: ""                   # when set, REPLACES embedded packs with
                                   # the YAML files in this directory
 
@@ -110,36 +123,55 @@ capture:
     path: ""                      # e.g. "~/.psxdh/capture.jsonl"
     fsync: false                  # fsync after every write (slow but durable)
 
-handoff:                          # Phase 2 — "Send to FDM" handoff settings
+handoff:                          # external-downloader handoff settings
   fdm:
     enabled: true
     fdm_binary: ""                # auto-detect on PATH when empty
     fallback_to_clipboard: true
+  aria2:                          # JSON-RPC push to a running aria2c
+    enabled: false
+    rpc_url: "http://127.0.0.1:6800/jsonrpc"
+    rpc_secret: ""                # matches aria2c --rpc-secret
+    auto_push: false              # push every captured PKG URL automatically
 
 forward:
   mode: "auto"                    # auto | cache | strict
   passthrough_https: true         # CONNECT tunnel without MITM (do not change)
   retry:                          # Pre-byte-write retry policy. See
                                   # docs/network-resilience.md.
-    max_attempts: 1               # 1 = no retry (default, today's behaviour)
-    initial_backoff_ms: 200
-    max_backoff_ms: 5000
+    max_attempts: 4               # 1 = no retry
+    initial_backoff_ms: 250
+    max_backoff_ms: 4000
     multiplier: 2.0
     jitter: 0.2
   partial_cache:                  # Tee successful forwards to disk and
                                   # promote them into the library on success.
-    enabled: false
+    enabled: true
     min_size_bytes: 1048576       # 1 MiB; skips tiny manifests
+    resume: true                  # continue a dropped .partial next run
 
 network:                          # Upstream-side resilience. See
                                   # docs/network-resilience.md for recipes.
   dns:
-    mode: "system"                # system | udp | doh | doh+udp
-    resolvers: []                 # plain "1.1.1.1" or "https://…/dns-query"
+    mode: "doh+udp"               # system | udp | doh | doh+udp
+    resolvers:                    # UDP first (DoH often blocked); verify with psxdh doctor
+      - "1.1.1.1"
+      - "9.9.9.9"
+      - "8.8.8.8"
+      - "8.8.4.4"
+      - "178.22.122.100"
+      - "185.51.200.2"
+      - "https://dns.electrotm.org/dns-query"
+      - "https://free.shecan.ir/dns-query"
+      - "https://1.1.1.1/dns-query"
+      - "https://dns.google/dns-query"
     timeout_ms: 1500              # per-resolver budget
     cache_ttl_s: 300              # fallback TTL (when upstream returns 0)
     cache_max_entries: 4096
-  prefer_ipv4: false              # try IPv4 addresses first
+    health:                       # rank resolvers by latency/success
+      enabled: true
+      reprobe_interval_ms: 60000  # 0 = no idle re-probe
+  prefer_ipv4: true               # try IPv4 addresses first
   dial_timeout_ms: 10000
   upstream_proxy:                 # HTTP/SOCKS5 chain (e.g. local VPN)
     enabled: false
@@ -154,7 +186,32 @@ network:                          # Upstream-side resilience. See
     burst_bytes: 0                # 0 = equal to forward_bps
 
 verify:
-  crc: false                      # Phase-0 sidecar verification scaffold
+  crc: false                      # .crc sidecar format flag (Phase-0 locked)
+  on_stable: true                 # verify .crc on each library promotion
+  require_size_match: false       # refuse to serve a wrong-sized local file
+
+mdns:                             # LAN discovery (ADR 0004)
+  enabled: false
+  instance_name: "psxdh"
+
+downloader:                       # embedded download engine (ADR 0005)
+  engine: "aria2"                 # managed aria2c subprocess
+  aria2_binary: ""                # auto-detect on PATH when empty
+  allow_http_fallback: false      # true = use built-in HTTP when aria2c missing (dev/CI only)
+  rpc_port: 6800
+  rpc_secret: ""                  # auto-generated when empty
+  connections_per_server: 8
+  split: 8
+  max_concurrent: 4
+
+cluster:                          # master/slave distributed download (ADR 0005)
+  enabled: true
+  role: "master"                  # master | slave
+  node_name: ""                   # defaults to hostname
+  master_as_node: true            # master: also download as a worker node (no loopback HTTP)
+  bind: "0.0.0.0:8082"            # cluster/agent API listen
+  master_url: ""                  # slave: base URL of the master
+  token: ""                       # shared cluster auth; generated on master when empty
 
 log:
   level: "info"                   # debug | info | warn | error
@@ -169,11 +226,19 @@ log:
 | --- | --- | --- |
 | `proxy.listen` | yes | `host:port` for the proxy server. Bind to `0.0.0.0` so the console can reach you over LAN. |
 
-#### `admin` (Phase 2)
+#### `admin`
+
+The embedded web dashboard (the GUI): live capture log, per-title session
+progress, library state, and a connectivity panel (DNS resolver health + CDN
+reachability). Opt-in. Because it is meant to be opened from a phone on the LAN,
+it binds beyond loopback by default and requires a token for any non-loopback
+bind.
 
 | Field | Required | Description |
 | --- | --- | --- |
-| `admin.listen` | yes | `host:port` for the embedded dashboard. Default loopback-only — only bind to `0.0.0.0` if you understand the security implications. |
+| `admin.enabled` | no | Start the dashboard. Default true; set false for headless. |
+| `admin.listen` | yes (when enabled) | `host:port` for the dashboard. Default `0.0.0.0:8081` so the LAN can reach it. |
+| `admin.token` | no | Shared token required for non-loopback binds. Sent via the `X-Psxdh-Token` header or a `?token=` query parameter. Left empty, a token is auto-generated at startup and printed in the banner (with a ready-to-open URL). |
 | `admin.auto_open` | no | If true, open the dashboard URL in the default browser on startup. |
 
 #### `library`
@@ -199,16 +264,20 @@ log:
 | Field | Required | Description |
 | --- | --- | --- |
 | `capture.log_ignored` | no | Publish capture events even for `KindUnknown` URLs. Default false to keep the dashboard signal-to-noise high. |
-| `capture.export_formats` | no | Phase 2: list of formats the `export` package emits. Currently honoured only for inventory; only `txt` is implemented today. |
+| `capture.export_formats` | no | Formats the `export` package emits. `txt` (one URL per line) and `aria2` (input-file format with `out=`/`dir=`) are implemented; `fdm` is reserved. |
 | `capture.prefetch_sc_metadata` | no | Phase 2: when true, background-fetch the first 64 KB of every captured `_sc.pkg` to parse `param.json` for display metadata. |
 
-#### `handoff` (Phase 2)
+#### `handoff`
 
 | Field | Required | Description |
 | --- | --- | --- |
 | `handoff.fdm.enabled` | no | Try the OS-specific "Send to FDM" action on per-URL clicks. |
 | `handoff.fdm.fdm_binary` | no | Override the FDM binary path. Empty = auto-detect on `PATH` or the default install location. |
 | `handoff.fdm.fallback_to_clipboard` | no | If the deep-link / binary handoff fails, copy the URL to the clipboard instead. |
+| `handoff.aria2.enabled` | no | Enable the aria2 JSON-RPC client (the dashboard's "→ aria2" action, and `auto_push`). |
+| `handoff.aria2.rpc_url` | when enabled | aria2 RPC endpoint, e.g. `http://127.0.0.1:6800/jsonrpc` (start aria2c with `--enable-rpc`). |
+| `handoff.aria2.rpc_secret` | no | Token matching aria2c's `--rpc-secret`. |
+| `handoff.aria2.auto_push` | no | Push every captured PKG URL into aria2 automatically (no copy-paste). Files land in `library.dir` with their original basename. |
 
 #### `forward`
 
@@ -216,13 +285,14 @@ log:
 | --- | --- | --- |
 | `forward.mode` | yes | `auto`: forward everything not in the library. `cache`: forward only classified URLs (block `unknown`). `strict`: never forward — return 502 when no local file exists. See [architecture.md](architecture.md#forward-modes). |
 | `forward.passthrough_https` | yes | Always true in v1. `CONNECT` is tunnelled as raw TCP; we never MITM HTTPS. Setting this to false would break PSN login and is rejected by the validator in spirit (kept as a config knob for transparency). |
-| `forward.retry.max_attempts` | no | Total attempts (initial + retries). `1` (default) disables retry. |
+| `forward.retry.max_attempts` | no | Total attempts (initial + retries). Default `4`; `1` disables retry. |
 | `forward.retry.initial_backoff_ms` | no | Wait before the second attempt. |
 | `forward.retry.max_backoff_ms` | no | Cap on any single sleep. Must be ≥ `initial_backoff_ms`. |
 | `forward.retry.multiplier` | no | Backoff growth factor (default 2.0). |
 | `forward.retry.jitter` | no | Fraction in `[0,1]` to randomise each sleep (default 0.2). |
 | `forward.partial_cache.enabled` | no | When true, successful non-Range GETs are tee'd to disk and atomically promoted into the library. |
 | `forward.partial_cache.min_size_bytes` | no | Minimum response size to cache; default 1 MiB. Below this we skip caching so we don't fill the library with tiny manifests. |
+| `forward.partial_cache.resume` | no | Continue a `.partial` left behind by a dropped forward (default true). The remainder is fetched with a Range/If-Range request, gated on the upstream validators still matching; any mismatch falls back to a fresh download. See [docs/network-resilience.md](network-resilience.md#cross-run-resumable-downloads). |
 
 See [docs/network-resilience.md](network-resilience.md) for the
 behaviour and the pre-write retry invariant.
@@ -234,11 +304,13 @@ All `network.*` fields are documented in detail in
 
 | Field | Required | Description |
 | --- | --- | --- |
-| `network.dns.mode` | no | `system` (default) \| `udp` \| `doh` \| `doh+udp`. |
+| `network.dns.mode` | no | `doh+udp` (default) \| `system` \| `udp` \| `doh`. |
 | `network.dns.resolvers` | no | Resolver list. `udp` accepts `host[:port]`; `doh` requires `https://…/dns-query`; `doh+udp` accepts both. |
 | `network.dns.timeout_ms` | no | Per-resolver budget (default 1500). |
 | `network.dns.cache_ttl_s` | no | Fallback TTL when the upstream returns 0 (default 300). |
 | `network.dns.cache_max_entries` | no | LRU cap on the in-memory resolver cache (default 4096). |
+| `network.dns.health.enabled` | no | Rank the configured resolvers by observed latency/success so a flapping endpoint stops taxing every lookup. The system resolver stays a fixed last-resort tail. See [docs/network-resilience.md](network-resilience.md#dns-resolver-health-ranking). |
+| `network.dns.health.reprobe_interval_ms` | no | Background re-probe cadence to keep ranking fresh on an idle link (default 60000). `0` disables the background probe; live traffic still updates the ranking. |
 | `network.prefer_ipv4` | no | Try IPv4 addresses before IPv6. |
 | `network.dial_timeout_ms` | no | Single-dial timeout (default 10000). |
 | `network.upstream_proxy.enabled` | no | Route forward traffic through an HTTP/SOCKS5 proxy. |
@@ -252,9 +324,69 @@ All `network.*` fields are documented in detail in
 
 #### `verify`
 
+Integrity verification so a corrupt download (common on a bad link) is never
+served — a failed install after hours is the worst outcome. A library file that
+fails verification is treated as "not local": the proxy forwards upstream so the
+console re-fetches correct bytes.
+
 | Field | Required | Description |
 | --- | --- | --- |
-| `verify.crc` | no | Reserved. The `.crc` sidecar parser is a scaffolded stub until Phase 0 captures the real PS5 format. Enabling this today is a no-op. |
+| `verify.crc` | no | Reserved flag for the `.crc` sidecar format. The CRC32/SHA-256 verifier is implemented; the exact PS5 `.crc` byte format is locked in Phase 0. |
+| `verify.on_stable` | no | Run `.crc` verification when the watcher promotes a file. If a `<pkg>.crc` sidecar is present and the digest mismatches, the PKG is marked corrupt and not served. |
+| `verify.require_size_match` | no | Refuse to serve a local file whose on-disk size differs from the upstream `Content-Length` observed for the same basename. The cheap guarantee that holds even without a `.crc`. |
+
+#### `mdns`
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `mdns.enabled` | no | Advertise psxdh on the LAN via mDNS/DNS-SD (`_http._tcp`) so the console-setup step doesn't require hunting for the PC's IP. See [ADR 0004](decisions/0004-mdns.md). |
+| `mdns.instance_name` | no | Service instance name (default `psxdh`). |
+
+#### `downloader`
+
+The embedded download engine (ADR 0005). A managed aria2c subprocess; required for
+`psxdh node` and for the master when `cluster.master_as_node` is true.
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `downloader.engine` | no | `aria2` (only engine). |
+| `downloader.aria2_binary` | no | Path to `aria2c`; auto-detected on `PATH` when empty. |
+| `downloader.allow_http_fallback` | no | When `true`, use the built-in HTTP engine if aria2c is missing (dev/CI only; default `false`). |
+| `downloader.rpc_port` | no | aria2 RPC listen port (default 6800). |
+| `downloader.rpc_secret` | no | aria2 RPC secret; auto-generated when empty. |
+| `downloader.connections_per_server` | no | aria2 `-x` (default 8). |
+| `downloader.split` | no | aria2 `-s` (default 8). |
+| `downloader.max_concurrent` | no | aria2 `-j` (default 4). |
+
+#### `cluster`
+
+Master/slave distributed download (ADR 0005). The **master** is the node the PS5
+proxies through; **slaves** (`psxdh node`) download assigned parts and hand them
+back. See the cluster quick-start in [README.md](../README.md).
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `cluster.enabled` | no | Turn on cluster behaviour. Default true. |
+| `cluster.role` | when enabled | `master` or `slave`. |
+| `cluster.node_name` | no | Node label in the dashboard; defaults to the hostname. |
+| `cluster.master_as_node` | master | When true, the master also runs the embedded downloader and participates as a download worker, writing parts directly into `library.dir`. |
+| `cluster.bind` | when enabled | `host:port` for the cluster/agent API. |
+| `cluster.master_url` | slave | Base URL of the master (e.g. `http://192.168.1.10:8082`). |
+| `cluster.token` | no | Shared cluster auth; generated on the master when empty (printed in the banner). Slaves must use the same value. |
+
+#### `jobs`
+
+Portable capture workflow: import a home `capture.jsonl`, optionally enumerate
+the full PKG part series from the CDN, and persist resumable job state. See
+README "Capture at home, download at work" and
+[docs/examples/config.home.yaml](examples/config.home.yaml) /
+[docs/examples/config.work.yaml](examples/config.work.yaml).
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `jobs.import_on_start` | no | JSONL path imported when the master starts. Empty disables. |
+| `jobs.import_enumerate` | no | Probe the CDN for the full `_0.._N` series on import. Default true. |
+| `jobs.state_path` | no | JSON snapshot of job progress. Empty disables persistence. |
 
 #### `capture.persist`
 

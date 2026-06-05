@@ -287,19 +287,62 @@ is reviewable.
 
 ## Concurrency & shutdown
 
-`cmd/psxdh proxy` runs three goroutines:
+Long-running commands (`psxdh proxy`, `psxdh node`) use
+[`internal/lifecycle`](../internal/lifecycle/lifecycle.go) to coordinate
+graceful shutdown on **SIGINT** / **SIGTERM**:
 
-1. **Library watcher** (`watcher.Run(ctx)`): drains fsnotify events, polls
-   pending files, emits library events. Closes its channel on `ctx.Done`.
-2. **Library event drainer** (anonymous goroutine in `proxy.go`): consumes
-   the watcher's channel so it never blocks emitting.
-3. **Proxy server** (`proxy.ListenAndServe(ctx)`): `http.Server.ListenAndServe`,
-   shut down with a 10 s graceful timeout when `ctx` is cancelled.
+1. `signal.NotifyContext` cancels the root context.
+2. Lifecycle logs `shutting down gracefully` and waits up to **15 seconds**
+   for every registered service to exit.
+3. HTTP servers (`proxy`, `admin`, cluster `agent`) call `http.Server.Shutdown`
+   with the same 15 s grace via `lifecycle.ShutdownHTTP`.
+4. The cluster `Manager` waits for in-flight `assign` / `collect` HTTP before
+   returning.
+5. Resources close in order: cluster/downloader last on the master
+   (`localDL.Close()` after `lifecycle.Run` returns).
+6. Lifecycle logs `shutdown complete`, or warns if the drain deadline was hit.
 
-`signal.NotifyContext` installs the `SIGINT` / `SIGTERM` handler. The first
-goroutine to return an error cancels the others; clean shutdown is signalled
-by all three returning a `nil` error after `ctx.Done()`.
+`psxdh proxy` registers these services with lifecycle:
+
+- Library watcher + event drainer
+- Proxy (and admin dashboard, if enabled)
+- Session aggregator, DNS re-probe, aria2 auto-push, cluster enumerate loop
+  (background bus workers)
+- Cluster manager + persist worker (when enabled)
 
 `http.Server.ReadHeaderTimeout` is set to 10 s, but no idle or read/write
-timeouts are applied — large PKG transfers can legitimately take hours, and
-the console will close the connection itself when it's done.
+timeouts are applied on the proxy path — large PKG transfers can legitimately
+take hours, and the console will close the connection itself when it's done.
+Active transfers get up to 15 s to finish after Ctrl-C before the listener
+is force-closed.
+
+---
+
+## Distributed cluster (ADR 0005)
+
+When `cluster.enabled` and `cluster.role: master`, the proxy node also runs a
+`cluster.Manager`. The flow:
+
+1. The PS5 proxies through the **master** and requests the first part
+   (`…_N.pkg`). A capture-bus subscriber derives the whole series with
+   `cluster.Enumerate` (substitute `_N`, probe `_0.._N` until a gap; the query
+   string and `f_<hash>` path segment are preserved) and submits it.
+2. The manager assigns parts to the least-loaded online **slave** node. Each
+   slave (`psxdh node`) runs an embedded `downloader.Downloader` (managed aria2c
+   by default; HTTP only when `downloader.allow_http_fallback` is set) behind a
+   token-guarded agent API. Startup requires aria2c unless that flag is set.
+3. The manager polls each slave's `/node/status`; when a part completes it
+   **pulls** the file from the slave (`/node/part/<basename>`, Range-capable)
+   into `library.dir` via temp-file + atomic rename.
+4. The existing watcher indexes the collected file; the master serves it to the
+   PS5 with the same `serve.Handler` (Range/206) used for any library hit.
+
+**Authority rule:** a part is "have it" iff it is present in the master's
+library index. This unifies slave-push collection with **manual** moves (drop a
+finished part into `library.dir` via USB/SSD and the manager never assigns it).
+
+Slaves are discovered via mDNS (`_psxdh-node._tcp`) or added by IP in the
+dashboard. All master↔slave calls carry the shared `cluster.token`. The
+downloader sits behind an interface, so the test suite drives the whole cluster
+in-process with no aria2c and no network (see `internal/cluster` and
+`internal/downloader` tests).

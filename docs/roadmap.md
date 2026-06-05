@@ -50,8 +50,10 @@ list.
 
 ### Non-goals (v1)
 
-- Built-in downloader (deferred indefinitely — FDM and friends already do
-  this better).
+- ~~Built-in downloader (deferred indefinitely).~~ **Reversed:** psxdh now
+  embeds a managed aria2c to power the distributed cluster — see
+  [ADR 0005](decisions/0005-distributed-downloader.md). External downloaders
+  (FDM/aria2/IDM) remain supported for non-cluster use.
 - Piracy, licence bypass, or downloading content the user does not own.
 - Remote Package Installer / homebrew PKG sideloading
   (DirectPackageInstaller, PSXhub, etc.).
@@ -118,12 +120,19 @@ sequenceDiagram
 | Multi-part session | manual | manual | log list | **session tracker** |
 | FDM / external downloader handoff | manual | manual | manual | **copy + export + best-effort deep link** |
 | Headless / NAS | no | CLI only | no | **yes** |
-| Built-in downloader | no | no | no | deliberately none (use FDM/aria2/etc.) |
+| Built-in downloader | no | no | no | **embedded aria2** (ADR 0005); external still supported |
+| Distributed multi-machine download | no | no | no | **yes** (master/slave cluster) |
 | Partial update diff | no | no | no | optional later (PSXhub-inspired, Phase 4) |
 | Custom DNS / DoH | no | no | no | **yes** (Phase 2.5) |
 | Upstream VPN / SOCKS5 chain | no | no | no | **yes** (Phase 2.5) |
 | Forward-path retry w/ backoff | no | no | no | **yes** (Phase 2.5) |
 | Diagnostic CLI | no | no | no | **yes** (`doctor`, `probe`) |
+| Cross-run resumable downloads | no | no | no | **yes** (partial-cache resume) |
+| Integrity verify before serve | no | no | no | **yes** (`.crc` + size gate) |
+| DNS resolver health ranking | no | no | no | **yes** |
+| Web dashboard (live log + sessions) | yes | no | WinUI | **yes** (embedded, LAN + token) |
+| aria2 live handoff (JSON-RPC push) | no | no | no | **yes** |
+| mDNS LAN announce | no | no | no | **yes** (`_http._tcp`) |
 
 See [research.md](research.md) for who these references are.
 
@@ -180,18 +189,23 @@ unlikely for the main game payload but possible for some update metadata.
 Validated end-to-end against the test suite (`e2e/phase1_test.go`); hardware
 validation remains in Phase 0.
 
-### Phase 2 — PS5 completeness + FDM handoff
+### Phase 2 — PS5 completeness + handoff (**mostly done**)
 
-- PS5 rule set + manifest helpers (`internal/manifest`).
-- Session aggregation + missing-part detection (`internal/session`).
-- Admin HTTP API + embedded web dashboard (live log, sessions, per-URL
-  actions) (`internal/admin`, `web/`).
-- `handoff` package: clipboard, FDM deep link / batch import on
-  Win/macOS/Linux.
-- Export to FDM batch + aria2 input formats.
+- PS5 rule set + manifest helpers (`internal/manifest`). *(rules done;
+  manifest helpers still ahead)*
+- Session aggregation + missing-part detection (`internal/session`). **Done.**
+- Admin HTTP API + embedded web dashboard (live SSE log, sessions, library
+  state, connectivity panel, per-URL "send to aria2") (`internal/admin`,
+  embedded `web/`). **Done** — LAN bind + token auth.
+- `handoff` package: aria2 JSON-RPC push + auto-push (`internal/handoff`).
+  **Done.** FDM deep link / clipboard still ahead.
+- Export to aria2 input format. **Done** (`export.WriteAria2`, `psxdh export`,
+  dashboard export buttons). FDM batch format still ahead.
+- Portable capture jobs: JSONL import/export, `jobs.*` config, persisted job
+  state, `psxdh import` CLI, dashboard import. **Done.**
 
-**Exit:** PS5 base + title update install on 2 titles using the FDM
-workflow.
+**Exit:** PS5 base + title update install on 2 titles using the handoff
+workflow (pending Phase 0 hardware validation).
 
 ### Phase 2.5 — Network resilience (**done**)
 
@@ -213,13 +227,19 @@ the opt-in stack documented in
 
 All defaults preserve the pre-2.5 behaviour bit-for-bit.
 
-### Phase 3 — Polish & distribution
+### Phase 3 — Polish & distribution (**partly done**)
 
-- Config file + env overrides + hot-reload.
+- Config file + env overrides + hot-reload. *(file done; env/hot-reload ahead)*
 - Setup wizard content (PS4 + PS5 proxy screenshots, step-by-step) under
-  `docs/console-setup/`.
+  `docs/console-setup/`. *(ahead)*
 - Release binaries (GoReleaser): amd64/arm64 for Windows, macOS, Linux.
-- Integration docs for FDM, aria2, IDM, JDownloader.
+  **Done** — `.goreleaser.yaml` + tag-triggered release workflow.
+- CI matrix (build + race tests + vet + golangci-lint) across the three
+  OSes. **Done** — `.github/workflows/ci.yml`, `.golangci.yml`.
+- mDNS LAN announce (`psxdh._http._tcp`). **Done** — see
+  [ADR 0004](decisions/0004-mdns.md).
+- Integration docs for FDM, aria2, IDM, JDownloader. *(aria2 done in
+  [network-resilience.md](network-resilience.md); others ahead)*
 
 **Exit:** v1.0 release.
 
@@ -230,7 +250,7 @@ All defaults preserve the pre-2.5 behaviour bit-for-bit.
 - Delta / partial update advisor ("only fetch parts X, Y, Z" — PSXhub-
   inspired, clean-room).
 - PS4 1.00 launch-version workflow guide automation.
-- mDNS announce proxy on LAN (`psxdh._http._tcp`).
+- ~~mDNS announce proxy on LAN~~ — **shipped** (moved to Phase 3, ADR 0004).
 - Optional native GUI (only if the web dashboard proves insufficient).
 - *Built-in downloader is deliberately not on this list.* If demand emerges,
   revisit — but FDM already does this better.

@@ -176,12 +176,12 @@ func mustURL(t *testing.T, raw string) *url.URL {
 // TestPhase1_ForwardThenLocalServe is the canonical Phase 1 exit scenario
 // from the implementation plan Step 1.9:
 //
-//   1. Console asks for a PS4-style multi-chunk PKG → proxy has no local copy
-//      → forwards upstream → console gets upstream bytes + sees a Range header
-//   2. User downloads the file with FDM (simulated by writing to the library
-//      dir) → watcher fires KindStable → file enters the index
-//   3. Console retries with a Range header → proxy serves from local file with
-//      206 Partial Content; upstream is never touched
+//  1. Console asks for a PS4-style multi-chunk PKG → proxy has no local copy
+//     → forwards upstream → console gets upstream bytes + sees a Range header
+//  2. User downloads the file with FDM (simulated by writing to the library
+//     dir) → watcher fires KindStable → file enters the index
+//  3. Console retries with a Range header → proxy serves from local file with
+//     206 Partial Content; upstream is never touched
 func TestPhase1_ForwardThenLocalServe(t *testing.T) {
 	const (
 		basename = "PPSA01234_00-FAKEPKG_0.pkg"

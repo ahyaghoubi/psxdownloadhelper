@@ -26,12 +26,19 @@ type Config struct {
 	CacheTTL time.Duration
 	// CacheMaxEntries caps the cache size. Zero means 4096.
 	CacheMaxEntries int
+	// HealthRanking, when true, ranks the configured resolvers by observed
+	// latency/success so a flapping endpoint stops taxing every lookup. The
+	// system resolver remains a fixed last-resort tail. See health.go.
+	HealthRanking bool
 }
 
 // NewFromConfig builds a resolver chain matching cfg. The returned resolver
 // is always wrapped in a cache. If cfg.Mode is empty or "system", the chain
 // degenerates to "system resolver + cache".
-func NewFromConfig(cfg Config) (Resolver, error) {
+//
+// The second return value is the *HealthResolver when health ranking is active
+// (else nil), so callers can expose its Snapshot/Reprobe to the dashboard.
+func NewFromConfig(cfg Config) (Resolver, *HealthResolver, error) {
 	mode := strings.ToLower(strings.TrimSpace(cfg.Mode))
 	if mode == "" {
 		mode = "system"
@@ -41,17 +48,24 @@ func NewFromConfig(cfg Config) (Resolver, error) {
 		timeout = 1500 * time.Millisecond
 	}
 
-	var inner []Resolver
+	// ranked holds the user-configured resolvers (with display names); the
+	// system resolver is always appended as the fixed fallback tail.
+	var ranked []Resolver
+	var names []string
+	add := func(r Resolver, name string) {
+		ranked = append(ranked, r)
+		names = append(names, name)
+	}
+
 	switch mode {
 	case "system":
-		inner = []Resolver{NewSystem()}
+		// Nothing to rank — system only.
 	case "udp":
 		for _, r := range cfg.Resolvers {
 			if r = strings.TrimSpace(r); r != "" {
-				inner = append(inner, NewUDP(r))
+				add(NewUDP(r), r)
 			}
 		}
-		inner = append(inner, NewSystem())
 	case "doh":
 		for _, r := range cfg.Resolvers {
 			r = strings.TrimSpace(r)
@@ -59,11 +73,10 @@ func NewFromConfig(cfg Config) (Resolver, error) {
 				continue
 			}
 			if !strings.HasPrefix(strings.ToLower(r), "https://") {
-				return nil, fmt.Errorf("netresolve: doh mode requires https:// endpoints, got %q", r)
+				return nil, nil, fmt.Errorf("netresolve: doh mode requires https:// endpoints, got %q", r)
 			}
-			inner = append(inner, NewDoH(r))
+			add(NewDoH(r), r)
 		}
-		inner = append(inner, NewSystem())
 	case "doh+udp":
 		for _, r := range cfg.Resolvers {
 			r = strings.TrimSpace(r)
@@ -71,18 +84,24 @@ func NewFromConfig(cfg Config) (Resolver, error) {
 				continue
 			}
 			if strings.HasPrefix(strings.ToLower(r), "https://") {
-				inner = append(inner, NewDoH(r))
+				add(NewDoH(r), r)
 			} else {
-				inner = append(inner, NewUDP(r))
+				add(NewUDP(r), r)
 			}
 		}
-		inner = append(inner, NewSystem())
 	default:
-		return nil, fmt.Errorf("netresolve: unknown dns mode %q (want system|udp|doh|doh+udp)", mode)
+		return nil, nil, fmt.Errorf("netresolve: unknown dns mode %q (want system|udp|doh|doh+udp)", mode)
 	}
 
+	system := NewSystem()
+	if cfg.HealthRanking && len(ranked) > 0 {
+		h := NewHealth(timeout, names, ranked, system)
+		return NewCache(h, cfg.CacheTTL, cfg.CacheMaxEntries), h, nil
+	}
+
+	inner := append(ranked, system)
 	multi := NewMulti(timeout, inner...)
-	return NewCache(multi, cfg.CacheTTL, cfg.CacheMaxEntries), nil
+	return NewCache(multi, cfg.CacheTTL, cfg.CacheMaxEntries), nil, nil
 }
 
 // HostPort splits a "host[:port]" address; missing port returns 0.

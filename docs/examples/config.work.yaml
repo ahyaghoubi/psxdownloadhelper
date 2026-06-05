@@ -1,0 +1,18 @@
+# Work profile: import home capture, cluster download, resume job state.
+# See README "Capture at home, download at work".
+
+jobs:
+  import_on_start: "~/psxdh/capture.jsonl"
+  import_enumerate: true
+  state_path: "~/psxdh/jobs/state.json"
+
+cluster:
+  enabled: true
+  role: master
+  master_as_node: true
+
+library:
+  dir: "~/Downloads/psxdh"
+
+admin:
+  enabled: true

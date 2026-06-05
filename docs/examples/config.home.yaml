@@ -1,0 +1,18 @@
+# Home profile: capture CDN URLs only, no local PKG download.
+# See README "Capture at home, download at work".
+
+capture:
+  persist:
+    enabled: true
+    path: "~/psxdh/capture.jsonl"
+    fsync: true
+
+forward:
+  partial_cache:
+    enabled: false
+
+cluster:
+  enabled: false
+
+admin:
+  enabled: true

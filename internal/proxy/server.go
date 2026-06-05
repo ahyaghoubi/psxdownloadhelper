@@ -12,10 +12,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"os"
 	"time"
 
 	"github.com/ahyaghoubi/psxdownloadhelper/internal/capture"
 	"github.com/ahyaghoubi/psxdownloadhelper/internal/config"
+	"github.com/ahyaghoubi/psxdownloadhelper/internal/lifecycle"
 	"github.com/ahyaghoubi/psxdownloadhelper/internal/library"
 	"github.com/ahyaghoubi/psxdownloadhelper/internal/match"
 	"github.com/ahyaghoubi/psxdownloadhelper/internal/retry"
@@ -85,7 +88,12 @@ func New(d Deps) (*Server, error) {
 	}
 	var pcache *partialCache
 	if d.Config.Forward.PartialCache.Enabled {
-		pcache = newPartialCache(d.Config.Library.Dir, d.Config.Forward.PartialCache.MinSizeBytes, logger)
+		pcache = newPartialCache(
+			d.Config.Library.Dir,
+			d.Config.Forward.PartialCache.MinSizeBytes,
+			d.Config.Forward.PartialCache.Resume,
+			logger,
+		)
 	}
 	return &Server{
 		cfg:    d.Config,
@@ -107,8 +115,7 @@ func (s *Server) Handler() http.Handler {
 }
 
 // ListenAndServe binds Config.Proxy.Listen and serves until ctx is canceled.
-// On cancellation, in-flight requests get up to 10 s to finish before the
-// listener is force-closed.
+// On cancellation, in-flight requests drain for up to lifecycle.DefaultTimeout.
 func (s *Server) ListenAndServe(ctx context.Context) error {
 	s.httpd = &http.Server{
 		Addr:    s.cfg.Proxy.Listen,
@@ -129,9 +136,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = s.httpd.Shutdown(shutdownCtx)
+		lifecycle.ShutdownHTTP(s.logger, "proxy", s.httpd)
 		return nil
 	case err := <-errCh:
 		return err
@@ -150,6 +155,40 @@ func defaultUpstreamClient() *http.Client {
 		},
 		// No client-level timeout: PKG transfers can be hours.
 	}
+}
+
+// verificationStore is the optional integrity surface a resolver may expose.
+// library.Index implements it; tests may stub it.
+type verificationStore interface {
+	VerifyStateOf(path string) library.VerifyState
+	ExpectedSize(basename string) (int64, bool)
+}
+
+// expectedSizeSetter lets the forward path record observed upstream sizes.
+type expectedSizeSetter interface {
+	SetExpectedSize(basename string, size int64)
+}
+
+// libraryServeOK reports whether a resolved local file is safe to serve. It is
+// false when the file is known-corrupt (a `.crc` verification failed) or, when
+// verify.require_size_match is set, when its on-disk size disagrees with the
+// upstream Content-Length we recorded for the same basename.
+func (s *Server) libraryServeOK(path string, u *url.URL) bool {
+	store, ok := s.res.(verificationStore)
+	if !ok {
+		return true
+	}
+	if store.VerifyStateOf(path) == library.VerifyFailed {
+		return false
+	}
+	if s.cfg.Verify.RequireSizeMatch {
+		if want, has := store.ExpectedSize(basenameFromURL(u)); has {
+			if fi, err := os.Stat(path); err == nil && fi.Size() != want {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // handle dispatches GET/HEAD vs CONNECT. Anything else gets 405.

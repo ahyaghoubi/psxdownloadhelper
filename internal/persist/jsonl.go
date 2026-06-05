@@ -26,7 +26,6 @@ import (
 	"github.com/ahyaghoubi/psxdownloadhelper/internal/match"
 )
 
-
 // Sink writes capture events to a JSONL file. The zero value is not usable;
 // construct via Open. Sink is safe for concurrent Writes.
 type Sink struct {

@@ -13,6 +13,58 @@ func TestDefaultValidates(t *testing.T) {
 	}
 }
 
+func TestDefaultIranProfile(t *testing.T) {
+	c := Default()
+
+	if !c.Admin.Enabled {
+		t.Error("admin.enabled should be true")
+	}
+	if c.Match.PS4 || !c.Match.PS5 {
+		t.Errorf("match should be PS5-only, got ps4=%v ps5=%v", c.Match.PS4, c.Match.PS5)
+	}
+	if !c.Cluster.Enabled || c.Cluster.Role != "master" || !c.Cluster.MasterAsNode {
+		t.Errorf("cluster = enabled:%v role:%q master_as_node:%v", c.Cluster.Enabled, c.Cluster.Role, c.Cluster.MasterAsNode)
+	}
+	if c.Network.DNS.Mode != "doh+udp" {
+		t.Errorf("dns.mode = %q, want doh+udp", c.Network.DNS.Mode)
+	}
+	wantResolvers := []string{
+		"1.1.1.1",
+		"9.9.9.9",
+		"8.8.8.8",
+		"8.8.4.4",
+		"178.22.122.100",
+		"185.51.200.2",
+		"https://dns.electrotm.org/dns-query",
+		"https://free.shecan.ir/dns-query",
+		"https://1.1.1.1/dns-query",
+		"https://dns.google/dns-query",
+	}
+	if len(c.Network.DNS.Resolvers) != len(wantResolvers) {
+		t.Fatalf("dns.resolvers len = %d, want %d", len(c.Network.DNS.Resolvers), len(wantResolvers))
+	}
+	for i, want := range wantResolvers {
+		if c.Network.DNS.Resolvers[i] != want {
+			t.Errorf("dns.resolvers[%d] = %q, want %q", i, c.Network.DNS.Resolvers[i], want)
+		}
+	}
+	if !c.Network.DNS.Health.Enabled {
+		t.Error("dns.health.enabled should be true")
+	}
+	if !c.Network.PreferIPv4 {
+		t.Error("network.prefer_ipv4 should be true")
+	}
+	if c.Forward.Retry.MaxAttempts != 4 {
+		t.Errorf("forward.retry.max_attempts = %d, want 4", c.Forward.Retry.MaxAttempts)
+	}
+	if !c.Forward.PartialCache.Enabled {
+		t.Error("forward.partial_cache.enabled should be true")
+	}
+	if !c.Verify.OnStable {
+		t.Error("verify.on_stable should be true")
+	}
+}
+
 func TestLoadCanonicalExample(t *testing.T) {
 	c, err := Load("testdata/config.yaml")
 	if err != nil {
@@ -292,6 +344,42 @@ func TestPersistPathExpansion(t *testing.T) {
 	}
 }
 
+func TestLoadDownloaderAllowHTTPFallback(t *testing.T) {
+	dir := t.TempDir()
+	yamlPath := filepath.Join(dir, "config.yaml")
+	body := "downloader:\n  allow_http_fallback: true\n"
+	if err := os.WriteFile(yamlPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !c.Downloader.AllowHTTPFallback {
+		t.Error("allow_http_fallback should be true")
+	}
+}
+
+func TestNeedsEmbeddedDownloader(t *testing.T) {
+	c := Default()
+	if !c.NeedsEmbeddedDownloader() {
+		t.Error("default config should need embedded downloader (cluster + master_as_node)")
+	}
+	c.Cluster.Enabled = false
+	if c.NeedsEmbeddedDownloader() {
+		t.Error("cluster disabled should not need embedded downloader")
+	}
+	c = Default()
+	c.Cluster.MasterAsNode = false
+	if c.NeedsEmbeddedDownloader() {
+		t.Error("master without master_as_node should not need embedded downloader")
+	}
+	c.Cluster.Role = "slave"
+	if !c.NeedsEmbeddedDownloader() {
+		t.Error("slave always needs embedded downloader")
+	}
+}
+
 func TestLoadCanonicalExampleIncludesResilienceFields(t *testing.T) {
 	c, err := Load("testdata/config.yaml")
 	if err != nil {
@@ -306,4 +394,51 @@ func TestLoadCanonicalExampleIncludesResilienceFields(t *testing.T) {
 	if c.Network.DNS.CacheMaxEntries != 4096 {
 		t.Errorf("default cache_max_entries = %d, want 4096", c.Network.DNS.CacheMaxEntries)
 	}
+}
+
+func TestResolveConfigPath(t *testing.T) {
+	t.Run("explicit flag", func(t *testing.T) {
+		load, persist, err := ResolveConfigPath("/etc/psxdh/config.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if load != "/etc/psxdh/config.yaml" || persist != "/etc/psxdh/config.yaml" {
+			t.Fatalf("got load=%q persist=%q", load, persist)
+		}
+	})
+
+	t.Run("default without file", func(t *testing.T) {
+		load, persist, err := ResolveConfigPath("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if load != "" {
+			t.Errorf("load = %q, want empty when default file missing", load)
+		}
+		if !strings.HasSuffix(persist, filepath.Join(".config", "psxdh", "config.yaml")) {
+			t.Errorf("persist = %q, want ~/.config/psxdh/config.yaml", persist)
+		}
+	})
+
+	t.Run("default with existing file", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("HOME", dir)
+		persist, err := DefaultConfigPath()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(persist), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(persist, []byte("log:\n  level: warn\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		load, gotPersist, err := ResolveConfigPath("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if load != persist || gotPersist != persist {
+			t.Fatalf("load=%q persist=%q", load, gotPersist)
+		}
+	})
 }

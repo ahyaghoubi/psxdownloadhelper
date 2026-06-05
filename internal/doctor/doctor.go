@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/ahyaghoubi/psxdownloadhelper/internal/config"
+	"github.com/ahyaghoubi/psxdownloadhelper/internal/downloader"
 	"github.com/ahyaghoubi/psxdownloadhelper/internal/match"
 	"github.com/ahyaghoubi/psxdownloadhelper/internal/netresolve"
 )
@@ -39,6 +40,15 @@ var DefaultPSNHosts = []string{
 type Report struct {
 	Resolvers []ResolverResult
 	Hosts     []HostResult
+	Aria2     Aria2Result
+}
+
+// Aria2Result records whether aria2c is available for the embedded downloader.
+type Aria2Result struct {
+	Found bool
+	Path  string
+	Err   string
+	Hint  string
 }
 
 // ResolverResult bundles the outcome of a single DNS resolver probing
@@ -101,6 +111,16 @@ func Check(ctx context.Context, cfg config.NetworkConfig, opts CheckOptions) *Re
 		}
 	}
 	return rep
+}
+
+// CheckAria2 probes for aria2c without starting a subprocess.
+func CheckAria2(d config.DownloaderConfig) Aria2Result {
+	hint := downloader.InstallHint()
+	path, err := downloader.LocateAria2(d.Aria2Binary)
+	if err == nil {
+		return Aria2Result{Found: true, Path: path, Hint: hint}
+	}
+	return Aria2Result{Found: false, Err: err.Error(), Hint: hint}
 }
 
 // describeResolvers expands cfg into one "labelled" resolver per

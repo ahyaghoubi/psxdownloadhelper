@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -72,11 +74,16 @@ func TestRootIncludesDoctorAndProbe(t *testing.T) {
 }
 
 func TestDoctorRunsWithSkipTLS(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("cluster:\n  enabled: false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	cmd := newRootCmd()
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
-	cmd.SetArgs([]string{"doctor", "--skip-tls", "--host", "localhost"})
+	cmd.SetArgs([]string{"doctor", "--skip-tls", "--host", "localhost", "--config", cfgPath})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("doctor: %v", err)
 	}

@@ -7,7 +7,7 @@ import (
 )
 
 func TestNewFromConfigSystemMode(t *testing.T) {
-	r, err := NewFromConfig(Config{Mode: "system"})
+	r, _, err := NewFromConfig(Config{Mode: "system"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -17,7 +17,7 @@ func TestNewFromConfigSystemMode(t *testing.T) {
 }
 
 func TestNewFromConfigDoHMode(t *testing.T) {
-	_, err := NewFromConfig(Config{
+	_, _, err := NewFromConfig(Config{
 		Mode: "doh",
 		Resolvers: []string{
 			"https://free.shecan.ir/dns-query",
@@ -32,7 +32,7 @@ func TestNewFromConfigDoHMode(t *testing.T) {
 }
 
 func TestNewFromConfigDoHRejectsPlainAddress(t *testing.T) {
-	_, err := NewFromConfig(Config{
+	_, _, err := NewFromConfig(Config{
 		Mode:      "doh",
 		Resolvers: []string{"1.1.1.1"},
 	})
@@ -42,7 +42,7 @@ func TestNewFromConfigDoHRejectsPlainAddress(t *testing.T) {
 }
 
 func TestNewFromConfigMixedMode(t *testing.T) {
-	_, err := NewFromConfig(Config{
+	_, _, err := NewFromConfig(Config{
 		Mode: "doh+udp",
 		Resolvers: []string{
 			"https://free.shecan.ir/dns-query",
@@ -56,14 +56,14 @@ func TestNewFromConfigMixedMode(t *testing.T) {
 }
 
 func TestNewFromConfigUnknownMode(t *testing.T) {
-	_, err := NewFromConfig(Config{Mode: "telepathy"})
+	_, _, err := NewFromConfig(Config{Mode: "telepathy"})
 	if err == nil || !strings.Contains(err.Error(), "telepathy") {
 		t.Errorf("expected unknown-mode error, got %v", err)
 	}
 }
 
 func TestNewFromConfigDefaultsToSystem(t *testing.T) {
-	r, err := NewFromConfig(Config{})
+	r, _, err := NewFromConfig(Config{})
 	if err != nil {
 		t.Fatal(err)
 	}

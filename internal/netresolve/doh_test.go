@@ -37,7 +37,7 @@ func fakeDoH(t *testing.T, aIPv4 [4]byte) *httptest.Server {
 			return
 		}
 		reply := dnsmessage.Message{
-			Header: dnsmessage.Header{ID: msg.ID, Response: true, RCode: dnsmessage.RCodeSuccess},
+			Header:    dnsmessage.Header{ID: msg.ID, Response: true, RCode: dnsmessage.RCodeSuccess},
 			Questions: msg.Questions,
 		}
 		for _, q := range msg.Questions {

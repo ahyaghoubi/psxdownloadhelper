@@ -1,8 +1,10 @@
 package proxy
 
 import (
+	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,7 +29,8 @@ var hopByHopHeaders = []string{
 // handleHTTP processes absolute-URI GET/HEAD requests received as a forward
 // proxy. The pipeline is the one drawn in docs/architecture.md
 // (Request handling pipeline):
-//   classify → publish capture event → library hit? serve : forward (per mode)
+//
+//	classify → publish capture event → library hit? serve : forward (per mode)
 func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL == nil || r.URL.Scheme == "" || r.URL.Host == "" {
 		http.Error(w, "absolute URL required for proxied request", http.StatusBadRequest)
@@ -49,9 +52,14 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if path, ok := s.res.Resolve(r.URL); ok {
-		s.logger.Info("library hit", "url", r.URL.String(), "kind", kind, "path", path)
-		s.serve.ServeFile(w, r, path)
-		return
+		if s.libraryServeOK(path, r.URL) {
+			s.logger.Info("library hit", "url", r.URL.String(), "kind", kind, "path", path)
+			s.serve.ServeFile(w, r, path)
+			return
+		}
+		// A corrupt or wrong-sized local file must not be served: fall through
+		// to the forward path so the console re-fetches correct bytes.
+		s.logger.Warn("library file failed integrity gate; forwarding upstream", "url", r.URL.String(), "path", path)
 	}
 
 	switch s.cfg.Forward.Mode {
@@ -78,10 +86,21 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 // the invariant in internal/retry). Once we start streaming, a mid-stream
 // failure bubbles up so the console can re-issue with a Range header.
 func (s *Server) forward(w http.ResponseWriter, r *http.Request) {
+	// Decide partial-cache handling before forwarding: a resumable .partial
+	// turns the upstream request into a Range/If-Range fetch of the remainder.
+	var plan *forwardPlan
+	if s.pcache != nil {
+		plan = s.pcache.Plan(r)
+	}
+
 	resp, err := s.retry.Do(r.Context(), retry.DefaultClassifier, func(_ int) (*http.Response, error) {
 		outReq := r.Clone(r.Context())
 		outReq.RequestURI = ""
 		stripHopByHop(outReq.Header)
+		if plan != nil && plan.resumeFrom > 0 {
+			outReq.Header.Set("Range", fmt.Sprintf("bytes=%d-", plan.resumeFrom))
+			outReq.Header.Set("If-Range", plan.validator)
+		}
 		return s.client.Do(outReq)
 	})
 	if err != nil {
@@ -91,26 +110,48 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
+	// Record the upstream size so a later library hit can be size-checked.
+	if resp.StatusCode == http.StatusOK && resp.ContentLength > 0 {
+		if store, ok := s.res.(expectedSizeSetter); ok {
+			if name := basenameFromURL(r.URL); name != "" {
+				store.SetExpectedSize(name, resp.ContentLength)
+			}
+		}
+	}
+
+	body := io.Reader(resp.Body)
+	status := resp.StatusCode
+	var finishPartial func(error)
+	if plan != nil {
+		res := s.pcache.Begin(plan, r, resp)
+		if res.err != nil {
+			s.logger.Warn("partial cache: resume aborted", "url", r.URL.String(), "err", res.err)
+			http.Error(w, "upstream error: stale partial; retry", http.StatusBadGateway)
+			return
+		}
+		if res.ok {
+			body = res.reader
+			finishPartial = res.done
+			status = res.status
+			if res.contentLength > 0 {
+				// Synthesised full response from a resumed 206: present a 200
+				// with the whole-file length, never a Content-Range.
+				resp.Header.Del("Content-Range")
+				resp.Header.Set("Content-Length", strconv.FormatInt(res.contentLength, 10))
+				resp.Header.Set("Accept-Ranges", "bytes")
+			}
+		}
+	}
+
 	stripHopByHop(resp.Header)
 	for k, vs := range resp.Header {
 		for _, v := range vs {
 			w.Header().Add(k, v)
 		}
 	}
-	w.WriteHeader(resp.StatusCode)
+	w.WriteHeader(status)
 	if r.Method == http.MethodHead {
 		return
-	}
-
-	body := io.Reader(resp.Body)
-	var finishPartial func(error)
-	if s.pcache != nil && s.pcache.Eligible(r, resp) {
-		if reader, done, err := s.pcache.Tee(r, resp); err == nil {
-			body = reader
-			finishPartial = done
-		} else {
-			s.logger.Warn("partial cache: tee failed", "err", err)
-		}
 	}
 
 	_, copyErr := io.Copy(w, body)

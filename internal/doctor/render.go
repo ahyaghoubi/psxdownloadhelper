@@ -35,17 +35,30 @@ func Render(w io.Writer, rep *Report) {
 		}
 	}
 
-	if len(rep.Hosts) == 0 {
+	if len(rep.Hosts) > 0 {
+		_, _ = fmt.Fprintln(w, "")
+		_, _ = fmt.Fprintln(w, "Direct TLS handshakes (port 443)")
+		for _, h := range rep.Hosts {
+			if h.Err != "" {
+				_, _ = fmt.Fprintf(w, "  %-40s  FAIL (%v) %s\n", h.Host, h.Latency.Round(1e6), trim(h.Err, 80))
+				continue
+			}
+			_, _ = fmt.Fprintf(w, "  %-40s  ok   (%v)\n", h.Host, h.Latency.Round(1e6))
+		}
+	}
+
+	_, _ = fmt.Fprintln(w, "")
+	_, _ = fmt.Fprintln(w, "Embedded downloader (aria2c)")
+	if rep.Aria2.Found {
+		_, _ = fmt.Fprintf(w, "  ok    %s\n", rep.Aria2.Path)
 		return
 	}
-	_, _ = fmt.Fprintln(w, "")
-	_, _ = fmt.Fprintln(w, "Direct TLS handshakes (port 443)")
-	for _, h := range rep.Hosts {
-		if h.Err != "" {
-			_, _ = fmt.Fprintf(w, "  %-40s  FAIL (%v) %s\n", h.Host, h.Latency.Round(1e6), trim(h.Err, 80))
-			continue
-		}
-		_, _ = fmt.Fprintf(w, "  %-40s  ok   (%v)\n", h.Host, h.Latency.Round(1e6))
+	_, _ = fmt.Fprintln(w, "  FAIL  aria2c not available")
+	if rep.Aria2.Err != "" {
+		_, _ = fmt.Fprintf(w, "        %s\n", trim(rep.Aria2.Err, 120))
+	}
+	if rep.Aria2.Hint != "" {
+		_, _ = fmt.Fprintf(w, "  Install: %s\n", rep.Aria2.Hint)
 	}
 }
 

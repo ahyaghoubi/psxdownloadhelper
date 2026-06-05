@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -61,6 +63,51 @@ func TestCheckRunsAgainstFakeHostsSkipsHandshake(t *testing.T) {
 	}
 }
 
+func TestCheckAria2Found(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "aria2c")
+	if err := os.WriteFile(bin, []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := CheckAria2(config.DownloaderConfig{Aria2Binary: bin})
+	if !r.Found || r.Path != bin {
+		t.Errorf("CheckAria2 = %+v, want found at %q", r, bin)
+	}
+}
+
+func TestCheckAria2Missing(t *testing.T) {
+	r := CheckAria2(config.DownloaderConfig{Aria2Binary: filepath.Join(t.TempDir(), "missing")})
+	if r.Found {
+		t.Fatalf("expected missing, got %+v", r)
+	}
+	if r.Hint == "" {
+		t.Error("expected non-empty install hint")
+	}
+}
+
+func TestRenderAria2Section(t *testing.T) {
+	var buf bytes.Buffer
+	Render(&buf, &Report{
+		Aria2: Aria2Result{Found: true, Path: "/usr/bin/aria2c"},
+	})
+	if !strings.Contains(buf.String(), "Embedded downloader (aria2c)") {
+		t.Fatalf("missing aria2 section: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "/usr/bin/aria2c") {
+		t.Fatalf("missing path: %s", buf.String())
+	}
+	buf.Reset()
+	Render(&buf, &Report{
+		Aria2: Aria2Result{Found: false, Err: "not found", Hint: "brew install aria2"},
+	})
+	out := buf.String()
+	for _, want := range []string{"FAIL", "brew install aria2"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestRenderProducesText(t *testing.T) {
 	rep := &Report{
 		Resolvers: []ResolverResult{
@@ -73,11 +120,12 @@ func TestRenderProducesText(t *testing.T) {
 		Hosts: []HostResult{
 			{Host: "example.com", TLSOK: true, Latency: 50 * time.Millisecond},
 		},
+		Aria2: Aria2Result{Found: true, Path: "/bin/aria2c"},
 	}
 	var buf bytes.Buffer
 	Render(&buf, rep)
 	out := buf.String()
-	for _, want := range []string{"system", "doh-shecan", "example.com", "1.2.3.4", "broken.example", "FAIL", "unreachable"} {
+	for _, want := range []string{"system", "doh-shecan", "example.com", "1.2.3.4", "broken.example", "FAIL", "unreachable", "Embedded downloader"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("rendered output missing %q: %s", want, out)
 		}

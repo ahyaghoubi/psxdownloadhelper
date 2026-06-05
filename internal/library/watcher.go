@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ahyaghoubi/psxdownloadhelper/internal/verify"
 	"github.com/fsnotify/fsnotify"
 )
 
@@ -29,6 +30,12 @@ type WatcherConfig struct {
 	// Files matching any of these never enter the state machine; the final
 	// rename into the real name then triggers a fresh Create event.
 	IgnoreSuffixes []string
+	// Verifier, when non-nil, is run on each KindStable transition: if a
+	// `.crc` sidecar exists next to the stabilised PKG (or the stabilised
+	// file is itself a `.crc`), the PKG is verified and its integrity status
+	// recorded in the Index. A corrupt file is marked VerifyFailed so the
+	// proxy refuses to serve it. ErrUnknownFormat is non-fatal (skipped).
+	Verifier verify.Verifier
 	// Logger receives slog records. Optional.
 	Logger *slog.Logger
 }
@@ -76,7 +83,7 @@ func NewWatcher(index *Index, cfg WatcherConfig) (*Watcher, error) {
 		return nil, fmt.Errorf("fsnotify.NewWatcher: %w", err)
 	}
 	if err := fsw.Add(index.Root()); err != nil {
-		fsw.Close()
+		_ = fsw.Close()
 		return nil, fmt.Errorf("watch %q: %w", index.Root(), err)
 	}
 	return &Watcher{
@@ -97,7 +104,7 @@ func (w *Watcher) Events() <-chan Event { return w.events }
 // return so consumers ranging over it see a clean shutdown.
 func (w *Watcher) Run(ctx context.Context) error {
 	defer close(w.events)
-	defer w.fsw.Close()
+	defer func() { _ = w.fsw.Close() }()
 	ticker := time.NewTicker(w.cfg.PollInterval)
 	defer ticker.Stop()
 	for {
@@ -208,6 +215,7 @@ func (w *Watcher) poll() {
 		if !now.Before(e.settleAt) && curSize > 0 {
 			w.drop(e.path)
 			w.index.Add(e.path)
+			w.verifyStable(e.path)
 			w.emit(Event{
 				Path:     e.path,
 				Basename: filepath.Base(e.path),
@@ -215,6 +223,46 @@ func (w *Watcher) poll() {
 				Kind:     KindStable,
 			})
 		}
+	}
+}
+
+// verifyStable runs integrity verification when a file settles. The stabilised
+// file may be either the PKG (we look for "<pkg>.crc" beside it) or the `.crc`
+// sidecar itself (we verify its neighbouring PKG). The PKG's status is recorded
+// on the Index so the proxy can refuse to serve a corrupt file.
+func (w *Watcher) verifyStable(p string) {
+	if w.cfg.Verifier == nil {
+		return
+	}
+	pkgPath, crcPath := p, p+".crc"
+	if strings.EqualFold(filepath.Ext(p), ".crc") {
+		pkgPath = strings.TrimSuffix(p, filepath.Ext(p))
+		crcPath = p
+	}
+	if _, err := os.Stat(crcPath); err != nil {
+		return // no sidecar → leave unchecked
+	}
+	if _, err := os.Stat(pkgPath); err != nil {
+		return // sidecar without its PKG yet
+	}
+	crc, err := verify.ParseCRC(crcPath)
+	if err != nil {
+		if !errors.Is(err, verify.ErrUnknownFormat) {
+			w.cfg.Logger.Warn("verify: parse .crc failed", "crc", crcPath, "err", err)
+		}
+		return
+	}
+	ok, err := w.cfg.Verifier.Verify(pkgPath, crc)
+	switch {
+	case err != nil:
+		w.cfg.Logger.Warn("verify: read failed; marking unverified-failed", "pkg", pkgPath, "err", err)
+		w.index.SetVerifyState(pkgPath, VerifyFailed)
+	case ok:
+		w.cfg.Logger.Info("verify: integrity OK", "pkg", pkgPath, "alg", crc.Algorithm)
+		w.index.SetVerifyState(pkgPath, VerifyOK)
+	default:
+		w.cfg.Logger.Warn("verify: integrity FAILED; proxy will not serve", "pkg", pkgPath, "alg", crc.Algorithm)
+		w.index.SetVerifyState(pkgPath, VerifyFailed)
 	}
 }
 

@@ -15,11 +15,11 @@ import (
 
 func newDoctorCmd() *cobra.Command {
 	var (
-		cfgPath       string
-		hosts         []string
-		skipTLS       bool
-		timeoutSec    int
-		listenForCfg  string // unused; kept for symmetry with proxy flags
+		cfgPath      string
+		hosts        []string
+		skipTLS      bool
+		timeoutSec   int
+		listenForCfg string // unused; kept for symmetry with proxy flags
 		_            = listenForCfg
 	)
 	cmd := &cobra.Command{
@@ -51,7 +51,11 @@ modifies state. It is safe to run alongside the running proxy.`,
 				SkipHandshake:    skipTLS,
 			}
 			rep := doctor.Check(ctx, cfg.Network, opts)
+			rep.Aria2 = doctor.CheckAria2(cfg.Downloader)
 			doctor.Render(cmd.OutOrStdout(), rep)
+			if cfg.NeedsEmbeddedDownloader() && !rep.Aria2.Found {
+				return fmt.Errorf("aria2c is required for cluster download nodes (install per hint above, or set downloader.allow_http_fallback for dev only)")
+			}
 			return nil
 		},
 	}

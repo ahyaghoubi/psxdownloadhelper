@@ -56,6 +56,15 @@ func makeProxy(t *testing.T, cfg *config.Config, res library.Resolver) (*Server,
 
 func defaultCfg() *config.Config {
 	c := config.Default()
+	// Proxy unit tests exercise forwarding in isolation; disable production
+	// resilience defaults so behaviour stays deterministic and fast.
+	c.Forward.Retry.MaxAttempts = 1
+	c.Forward.PartialCache.Enabled = false
+	c.Verify.OnStable = false
+	c.Network.DNS.Mode = "system"
+	c.Network.DNS.Resolvers = nil
+	c.Network.DNS.Health.Enabled = false
+	c.Network.PreferIPv4 = false
 	return c
 }
 

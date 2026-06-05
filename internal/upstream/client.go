@@ -18,7 +18,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"golang.org/x/net/proxy"
@@ -323,7 +322,6 @@ func (b *bandwidthRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 type bandwidthBody struct {
 	io.ReadCloser
 	limited io.Reader
-	once    sync.Once
 }
 
 func (b *bandwidthBody) Read(p []byte) (int, error) {

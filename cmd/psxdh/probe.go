@@ -44,7 +44,7 @@ given URL is reachable through the resolver chain you intend to deploy.`,
 			if err != nil {
 				return fmt.Errorf("load rules: %w", err)
 			}
-			resolver, err := netresolve.NewFromConfig(netresolve.Config{
+			resolver, _, err := netresolve.NewFromConfig(netresolve.Config{
 				Mode:            cfg.Network.DNS.Mode,
 				Resolvers:       cfg.Network.DNS.Resolvers,
 				Timeout:         cfg.Network.DNS.Timeout(),
