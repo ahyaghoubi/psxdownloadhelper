@@ -97,8 +97,8 @@ func TestJobsImportJSONPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(home, ".psxdh-test-import")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	dir, err := os.MkdirTemp(home, "psxdh-import-test-*")
+	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
@@ -111,16 +111,20 @@ func TestJobsImportJSONPath(t *testing.T) {
 	srv := httptest.NewServer(s.Handler())
 	defer srv.Close()
 
-	body := `{"path":"` + jsonl + `"}`
-	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/jobs/import?enumerate=false", strings.NewReader(body))
+	body, err := json.Marshal(map[string]string{"path": jsonl})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/jobs/import?enumerate=false", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", resp.StatusCode)
+		msg, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body = %s", resp.StatusCode, msg)
 	}
 }
 

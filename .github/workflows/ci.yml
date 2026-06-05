@@ -43,6 +43,8 @@ jobs:
       - uses: golangci/golangci-lint-action@v6
         with:
           version: latest
+          # Prebuilt binaries lag the Go toolchain; compile with setup-go's Go 1.26.
+          install-mode: goinstall
 
   cross-build:
     name: cross-build (${{ matrix.goos }}/${{ matrix.goarch }})
