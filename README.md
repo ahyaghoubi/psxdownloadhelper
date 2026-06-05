@@ -60,7 +60,31 @@ the URL patterns the proxy classifies, see
 
 ## Quick start
 
-### Build
+### Install from GitHub Releases
+
+Download the binary for your OS/arch from
+[GitHub Releases](https://github.com/ahyaghoubi/psxdownloadhelper/releases)
+(e.g. `psxdh_0.1.0_darwin_arm64`, `psxdh_0.1.0_linux_amd64`,
+`psxdh_0.1.0_windows_amd64.exe`). No archive to extract.
+
+**Double-click to run:** launching the binary with no arguments starts
+`psxdh proxy` automatically (Windows opens a console window; the server runs
+until you close it or press Ctrl-C). From a terminal you can still use explicit
+subcommands (`psxdh version`, `psxdh doctor`, …).
+
+```bash
+chmod +x psxdh_0.1.0_darwin_arm64   # macOS/Linux, if needed
+./psxdh_0.1.0_darwin_arm64          # same as: … proxy
+```
+
+On macOS, the first launch from Downloads may require **right-click → Open**
+(Gatekeeper). For a smoother double-click experience, rename the file to
+`psxdh` and move it somewhere permanent (e.g. `~/Applications/`).
+
+Verify with `psxdh version` (should show the release tag, not `dev`). Optional:
+rename to `psxdh` and put it on your `PATH`.
+
+### Build from source
 
 ```bash
 go build ./cmd/psxdh
