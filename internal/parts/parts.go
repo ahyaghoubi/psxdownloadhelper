@@ -164,3 +164,13 @@ func (f *Finder) probe(ctx context.Context, u *url.URL, header http.Header) (int
 		return 0, false
 	}
 }
+
+var packageSuffix = regexp.MustCompile(`(?i)(_\d+|_sc|-DP)?\.pkg$`)
+
+// PackageName returns the name shared by every file of one package: the
+// file name without its part number, `_sc` or `-DP` suffix and extension.
+// "EP1004-PPSA01547_00-GTA_51.pkg" and "EP1004-PPSA01547_00-GTA_sc.pkg"
+// both belong to "EP1004-PPSA01547_00-GTA".
+func PackageName(fileName string) string {
+	return packageSuffix.ReplaceAllString(fileName, "")
+}

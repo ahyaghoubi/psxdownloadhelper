@@ -131,3 +131,17 @@ func TestDiscoverIgnoresFilesWithoutNumber(t *testing.T) {
 		t.Fatal("no probing for un-numbered files")
 	}
 }
+
+func TestPackageName(t *testing.T) {
+	for in, want := range map[string]string{
+		"EP1004-PPSA01547_00-GTA_51.pkg":          "EP1004-PPSA01547_00-GTA",
+		"EP1004-PPSA01547_00-GTA_sc.pkg":          "EP1004-PPSA01547_00-GTA",
+		"EP1004-PPSA01547_00-GTA-A0102-DP.pkg":    "EP1004-PPSA01547_00-GTA-A0102",
+		"UP0001-CUSA00001_00-X-A0100-V0100_0.pkg": "UP0001-CUSA00001_00-X-A0100-V0100",
+		"plain.pkg": "plain",
+	} {
+		if got := PackageName(in); got != want {
+			t.Errorf("PackageName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

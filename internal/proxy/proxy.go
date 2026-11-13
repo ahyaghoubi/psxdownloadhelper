@@ -58,8 +58,9 @@ type Server struct {
 	finder    *parts.Finder
 	log       *slog.Logger
 
-	mu       sync.Mutex
-	searched map[string]bool // series already searched since start
+	mu        sync.Mutex
+	searched  map[string]bool // series already searched since start
+	userAgent atomic.Value    // the console's User-Agent, for searches started from the dashboard
 }
 
 // New returns a proxy Server.
@@ -115,22 +116,28 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if (r.Method == http.MethodGet || r.Method == http.MethodHead) && s.serveLocal(w, r, kind, key) {
 		return
 	}
-	// Only look for the other parts when the console has to go to Sony: if
-	// this part is already on the PC, the user has the game's links.
+	start := rangeStart(r.Header.Get("Range"))
 	if key != "" {
-		s.findParts(r, kind, hint)
+		s.userAgent.Store(r.UserAgent())
+		// Only look for the other parts when the console has to go to
+		// Sony (if this part is on the PC, the user has the links) and the
+		// package doesn't look like an update. Updates fetch scattered
+		// pieces of a big package; downloading all of it would be wasteful.
+		if pkg := s.d.Tracker.NoteRequest(key, start); !pkg.ConsoleDownloads() {
+			s.findParts(r.URL, r.Header, kind, hint)
+		}
 	}
-	s.forward(w, r, key)
+	s.forward(w, r, key, start)
 }
 
 // findParts starts a background search for the other parts of a numbered
 // package the first time the console asks for any part of it, so the user
 // can download the whole game without keeping the console connected.
-func (s *Server) findParts(r *http.Request, kind match.Kind, hint match.Hint) {
-	if s.d.DisableFindParts || !match.IsPackage(kind) || parts.Index(r.URL) < 0 {
+func (s *Server) findParts(u *url.URL, header http.Header, kind match.Kind, hint match.Hint) {
+	if s.d.DisableFindParts || !match.IsPackage(kind) || parts.Index(u) < 0 {
 		return
 	}
-	series := parts.SeriesKey(r.URL)
+	series := parts.SeriesKey(u)
 	s.mu.Lock()
 	if s.searched[series] {
 		s.mu.Unlock()
@@ -139,8 +146,8 @@ func (s *Server) findParts(r *http.Request, kind match.Kind, hint match.Hint) {
 	s.searched[series] = true
 	s.mu.Unlock()
 
-	seed := *r.URL
-	header := r.Header.Clone()
+	seed := *u
+	header = header.Clone()
 	done := s.d.Tracker.StartFinding(hint.TitleHint)
 	go func() {
 		defer done()
@@ -154,6 +161,35 @@ func (s *Server) findParts(r *http.Request, kind match.Kind, hint match.Hint) {
 			})
 		s.log.Info("finished looking for other parts", "title", hint.TitleHint, "found", n.Load())
 	}()
+}
+
+// FindPartsFor searches for every part of the package that rawURL belongs
+// to. The dashboard uses it when the user decides to download a package on
+// the PC that psxdh had treated as an update.
+func (s *Server) FindPartsFor(rawURL string, kind match.Kind, title string) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return
+	}
+	h := http.Header{}
+	if ua, _ := s.userAgent.Load().(string); ua != "" {
+		h.Set("User-Agent", ua)
+	}
+	s.findParts(u, h, kind, match.Hint{TitleHint: title, PartIndex: parts.Index(u)})
+}
+
+// rangeStart returns the first byte offset of a "bytes=N-…" Range header, or 0.
+func rangeStart(h string) int64 {
+	v, ok := strings.CutPrefix(strings.TrimSpace(h), "bytes=")
+	if !ok {
+		return 0
+	}
+	v, _, _ = strings.Cut(v, "-")
+	n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 // serveLocal serves the request from the library when a complete copy
@@ -183,7 +219,7 @@ func (s *Server) serveLocal(w http.ResponseWriter, r *http.Request, kind match.K
 	return true
 }
 
-func (s *Server) forward(w http.ResponseWriter, r *http.Request, key string) {
+func (s *Server) forward(w http.ResponseWriter, r *http.Request, key string, start int64) {
 	out := r.Clone(r.Context())
 	out.RequestURI = ""
 	if r.ContentLength == 0 {
@@ -211,8 +247,13 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, key string) {
 		return
 	}
 	cw := &countingWriter{ResponseWriter: w}
-	if key != "" {
-		cw.add = func(n int64) { s.d.Tracker.AddFromSony(key, n) }
+	// Count file bytes only: an error page from Sony isn't part of the file.
+	if key != "" && (resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusPartialContent) {
+		var written int64
+		cw.add = func(n int64) {
+			written += n
+			s.d.Tracker.AddFromSony(key, n, start+written)
+		}
 	}
 	buf := bufPool.Get().(*[]byte)
 	defer bufPool.Put(buf)

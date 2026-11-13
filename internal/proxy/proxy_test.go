@@ -381,3 +381,44 @@ func TestFindsOtherPartsInBackground(t *testing.T) {
 		t.Errorf("part search should reuse the console's User-Agent, got %v", gotUA.Load())
 	}
 }
+
+func TestUpdateRequestDoesNotSearchForParts(t *testing.T) {
+	var probes atomic.Int64
+	// An 80 GB update package: answer any range with 100 bytes.
+	cdn := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "_3.pkg") {
+			probes.Add(1)
+		}
+		w.Header().Set("Content-Range", "bytes 50000000000-50000000099/80000000000")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(make([]byte, 100))
+	})
+	h := newHarnessWith(t, nil, cdn, false)
+	upd := strings.Replace(pkgURL, "_0.pkg", "_3.pkg", 1)
+	resp, body := h.get(t, upd, "bytes=50000000000-50000000099")
+	if resp.StatusCode != http.StatusPartialContent || len(body) != 100 {
+		t.Fatalf("forward: %d %d", resp.StatusCode, len(body))
+	}
+	time.Sleep(300 * time.Millisecond)
+	if n := probes.Load(); n != 0 {
+		t.Fatalf("part search ran for an update (%d probes)", n)
+	}
+	items, _ := h.track.Snapshot()
+	if len(items) != 1 || !h.track.PackageOf(items[0].Key).ConsoleDownloads() {
+		t.Fatalf("package should be marked as an update: %+v", items)
+	}
+	if items[0].SonyReach != 50000000100 {
+		t.Errorf("SonyReach = %d", items[0].SonyReach)
+	}
+}
+
+func TestRangeStart(t *testing.T) {
+	for h, want := range map[string]int64{
+		"": 0, "bytes=0-": 0, "bytes=500-999": 500, " bytes=123-": 123,
+		"bytes=-500": 0, "items=5-": 0, "bytes=abc-": 0,
+	} {
+		if got := rangeStart(h); got != want {
+			t.Errorf("rangeStart(%q) = %d, want %d", h, got, want)
+		}
+	}
+}

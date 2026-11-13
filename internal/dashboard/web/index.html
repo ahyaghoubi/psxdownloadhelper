@@ -189,6 +189,13 @@ svg.i { width: 18px; height: 18px; flex: none; }
 .bar.b-sending > i, .bar.b-sent > i { background: var(--live); }
 .bar.b-from-sony > i { background: var(--warn); }
 .bar.b-ready > i { background: var(--ok); }
+.chip { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--live-soft); color: var(--live); }
+button.small { font-size: 13px; padding: 4px 10px; min-height: 30px; }
+.update-body { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; font-size: 14px; }
+.update-body svg { color: var(--live); margin-top: 2px; }
+.update-body b { display: block; }
+.title-head h3 + .chip { margin-right: auto; }
+.title-card.is-update .title-head h3 { margin-right: 0; }
 .finding { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--info); font-weight: 600; }
 .finding::before { content: ""; width: 12px; height: 12px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -392,7 +399,8 @@ function flashCopied(btn) {
   setTimeout(() => use.setAttribute("href", "#i-copy"), 1400);
 }
 
-function files() { return state ? state.titles.flatMap((t) => t.files) : []; }
+// Files to download on the PC. Updates the console fetches itself are left out.
+function files() { return state ? state.titles.filter((t) => !t.update).flatMap((t) => t.files) : []; }
 const needsDownload = (f) => f.status === "needed" || f.status === "from-sony" || f.status === "wrong-size";
 
 function renderHeader() {
@@ -430,11 +438,12 @@ function renderHeader() {
 
 function renderSteps() {
   const all = files();
+  const any = state.titles.length > 0;
   const done = [
-    state.console.connected || all.length > 0,
-    all.length > 0,
-    all.length > 0 && all.every((f) => ["ready", "sending", "sent"].includes(f.status)),
-    all.length > 0 && all.every((f) => f.status === "sent"),
+    state.console.connected || any,
+    any,
+    any && all.every((f) => ["ready", "sending", "sent"].includes(f.status)),
+    any && all.every((f) => f.status === "sent"),
   ];
   const current = done.indexOf(false);
   document.querySelectorAll(".step").forEach((s, i) => {
@@ -508,27 +517,60 @@ function updateRow(row, f) {
   setText(badge, LABEL[f.status] || f.status);
 }
 
+async function setMode(pkg, mode) {
+  try {
+    const r = await fetch("/api/mode", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ package: pkg, mode }) });
+    if (!r.ok) throw new Error(r.status);
+    toast(mode === "console" ? "Marked as an update: the console downloads it" : "Download on PC: finding all parts");
+  } catch { toast("Couldn't change that. Is psxdh running?"); }
+  refresh();
+}
+function modeButton(t) {
+  const toConsole = !t.update;
+  const b = el("button", { class: "ghost small", title: toConsole ? "Updates only need a few pieces of a big package. Let the console fetch them itself." : "Download every part of this package on the PC" },
+    el("span", { text: toConsole ? "It's an update" : "Download on PC instead" }));
+  b.addEventListener("click", () => setMode(t.package, toConsole ? "console" : "pc"));
+  return b;
+}
+function buildCard(t) {
+  const card = el("div", { class: "title-card" + (t.update ? " is-update" : ""), "data-pkg": t.package });
+  const head = el("div", { class: "title-head" }, el("h3", { text: t.id }));
+  if (t.update) head.append(el("span", { class: "chip", text: "Update" }));
+  head.append(el("span", { class: "finding", "data-f": "finding", text: "Finding all parts…" }),
+    el("span", { class: "muted", "data-f": "count", style: "font-size:13px" }), modeButton(t));
+  card.append(head);
+  if (t.update) {
+    card.append(el("div", { class: "update-body" }, icon("info"),
+      el("div", {},
+        el("b", { text: "Your console downloads this update itself." }),
+        el("span", { class: "muted", "data-f": "update-sub" }))));
+  } else {
+    t.files.forEach((f) => card.append(buildRow(f)));
+  }
+  return card;
+}
+
 function renderTitles() {
   const box = $("titles");
-  const structure = state.titles.map((t) => t.id + ":" + t.files.map((f) => f.key).join(",")).join("|");
+  const structure = state.titles.map((t) => t.package + (t.update ? "!u" : "") + ":" + (t.update ? "" : t.files.map((f) => f.key).join(","))).join("|");
   if (structure !== lastStructure) {
     lastStructure = structure;
-    box.replaceChildren(...state.titles.map((t) => {
-      const card = el("div", { class: "title-card", "data-title": t.id });
-      card.append(el("div", { class: "title-head" }, el("h3", { text: t.id }),
-        el("span", { class: "finding", "data-f": "finding", text: "Finding all parts…" }),
-        el("span", { class: "muted", "data-f": "count", style: "font-size:13px" })));
-      t.files.forEach((f) => card.append(buildRow(f)));
-      return card;
-    }));
+    box.replaceChildren(...state.titles.map(buildCard));
   }
   state.titles.forEach((t) => {
-    const card = box.querySelector('[data-title="' + CSS.escape(t.id) + '"]');
+    const card = box.querySelector('[data-pkg="' + CSS.escape(t.package) + '"]');
     if (!card) return;
     const total = t.files.reduce((a, f) => a + (f.size || 0), 0);
+    card.querySelector('[data-f="finding"]').hidden = !t.finding;
+    if (t.update) {
+      setText(card.querySelector('[data-f="count"]'), total ? "package " + fmtBytes(total) : "");
+      setText(card.querySelector('[data-f="update-sub"]'),
+        "It only needs a few pieces of this " + (total ? fmtBytes(total) + " " : "") + "package, so downloading it on the PC would waste time. Leave the console connected until it finishes." +
+        (t.sonyBytes ? " Downloaded so far: " + fmtBytes(t.sonyBytes) + "." : ""));
+      return;
+    }
     const ready = t.files.filter((f) => ["ready", "sending", "sent"].includes(f.status)).length;
     setText(card.querySelector('[data-f="count"]'), ready + " of " + t.files.length + " on PC" + (total ? " · " + fmtBytes(total) : ""));
-    card.querySelector('[data-f="finding"]').hidden = !t.finding;
     t.files.forEach((f) => {
       const row = card.querySelector('[data-key="' + CSS.escape(f.key) + '"]');
       if (row) updateRow(row, f);

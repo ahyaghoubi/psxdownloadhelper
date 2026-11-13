@@ -5,6 +5,8 @@
 //	GET  /api/urls.txt  captured PKG URLs, one per line (?need=1: only ones
 //	                    not yet in the library)
 //	POST /api/clear     forget captured URLs
+//	POST /api/mode      {"package": "...", "mode": "pc"|"console"|""}: who
+//	                    downloads a package
 package dashboard
 
 import (
@@ -35,6 +37,7 @@ const (
 	StatusReady       Status = "ready"       // in the library, waiting for the console
 	StatusSending     Status = "sending"     // console is installing it from the PC
 	StatusSent        Status = "sent"        // console has received the whole file
+	StatusConsole     Status = "console"     // an update: the console fetches it itself
 )
 
 // activeWindow is how recently bytes must have flowed to count as "now".
@@ -50,6 +53,10 @@ type Info struct {
 
 // Handler serves the dashboard.
 type Handler struct {
+	// OnDownloadOnPC, when set, is called with a package the user chose to
+	// download on the PC, so psxdh can look for its other parts.
+	OnDownloadOnPC func(pkg string)
+
 	info    Info
 	lib     *library.Library
 	tracker *tracker.Tracker
@@ -65,6 +72,7 @@ func New(info Info, lib *library.Library, t *tracker.Tracker) *Handler {
 	h.mux.HandleFunc("GET /api/state", h.state)
 	h.mux.HandleFunc("GET /api/urls.txt", h.urls)
 	h.mux.HandleFunc("POST /api/clear", h.clear)
+	h.mux.HandleFunc("POST /api/mode", h.mode)
 	return h
 }
 
@@ -95,11 +103,18 @@ type ConsoleState struct {
 	AgoSec    int    `json:"agoSec"`
 }
 
-// Title groups the files of one game or update.
+// Title is one package: all parts of a game, or of an update.
 type Title struct {
-	ID      string `json:"id"`
+	ID      string `json:"id"`      // title ID such as PPSA01547
+	Package string `json:"package"` // package name shared by its files
 	Finding bool   `json:"finding"` // still looking for more parts on Sony
-	Files   []File `json:"files"`
+	// Update is true when the console should fetch this package itself:
+	// psxdh saw it fetch scattered pieces (Detected) or the user chose so.
+	Update    bool   `json:"update"`
+	Detected  bool   `json:"detected"`
+	Mode      string `json:"mode"`
+	SonyBytes int64  `json:"sonyBytes"` // what the console has fetched from Sony
+	Files     []File `json:"files"`
 }
 
 // File is one captured PKG and its status.
@@ -148,26 +163,36 @@ func (h *Handler) Build() State {
 	}
 
 	finding := h.tracker.Finding()
+	pkgs := h.tracker.Packages()
 	captured := map[string]bool{}
-	byTitle := map[string]int{}
+	byPackage := map[string]int{}
 	for _, it := range items {
 		if !match.IsPackage(it.Kind) {
 			st.Other++
 			continue
 		}
 		captured[it.Name] = true
+		p := pkgs[it.Package]
 		f := h.file(it, now)
-		st.Counts[f.Status]++
+		if p.ConsoleDownloads() {
+			f.Status = StatusConsole
+		} else {
+			st.Counts[f.Status]++
+		}
 		id := it.Title
 		if id == "" {
 			id = "Other"
 		}
-		i, ok := byTitle[id]
+		i, ok := byPackage[it.Package]
 		if !ok {
 			i = len(st.Titles)
-			byTitle[id] = i
-			st.Titles = append(st.Titles, Title{ID: id, Finding: finding[it.Title]})
+			byPackage[it.Package] = i
+			st.Titles = append(st.Titles, Title{
+				ID: id, Package: it.Package, Finding: finding[it.Title] && !p.ConsoleDownloads(),
+				Update: p.ConsoleDownloads(), Detected: p.Sparse, Mode: p.Mode,
+			})
 		}
+		st.Titles[i].SonyBytes += it.FromSony
 		st.Titles[i].Files = append(st.Titles[i].Files, f)
 	}
 	for _, f := range h.lib.Files() {
@@ -240,5 +265,30 @@ func (h *Handler) urls(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) clear(w http.ResponseWriter, _ *http.Request) {
 	h.tracker.Clear()
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) mode(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Package string `json:"package"`
+		Mode    string `json:"mode"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	switch req.Mode {
+	case tracker.ModeAuto, tracker.ModePC, tracker.ModeConsole:
+	default:
+		http.Error(w, "mode must be pc, console or empty", http.StatusBadRequest)
+		return
+	}
+	if !h.tracker.SetMode(req.Package, req.Mode) {
+		http.Error(w, "unknown package", http.StatusNotFound)
+		return
+	}
+	if req.Mode == tracker.ModePC && h.OnDownloadOnPC != nil {
+		h.OnDownloadOnPC(req.Package)
+	}
 	w.WriteHeader(http.StatusNoContent)
 }

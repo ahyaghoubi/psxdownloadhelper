@@ -160,6 +160,15 @@ func run(ctx context.Context, args []string, out io.Writer, openBrowser bool) er
 	if err != nil {
 		return err
 	}
+	dash.OnDownloadOnPC = func(pkg string) {
+		items, _ := track.Snapshot()
+		for _, it := range items {
+			if it.Package == pkg && it.Part >= 0 {
+				handler.FindPartsFor(it.URL, it.Kind, it.Title)
+				return
+			}
+		}
+	}
 
 	srv := &http.Server{
 		Handler:           handler,

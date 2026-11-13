@@ -219,6 +219,7 @@ type apiState struct {
 	Titles []struct {
 		ID      string      `json:"id"`
 		Finding bool        `json:"finding"`
+		Update  bool        `json:"update"`
 		Files   []fileState `json:"files"`
 	} `json:"titles"`
 	Library []struct {
@@ -601,5 +602,58 @@ func TestConsoleOffWorkflow(t *testing.T) {
 	}
 	for i := 0; i < 4; i++ {
 		in2.waitStatus(t, name(i), "sending")
+	}
+}
+
+// TestUpdateIsLeftToTheConsole: for an update the console fetches scattered
+// pieces of a big package. psxdh must not ask the user to download the whole
+// package, unless the user says so.
+func TestUpdateIsLeftToTheConsole(t *testing.T) {
+	sony := newGameCDN(t, 48<<20, 3) // 3 parts of ~48 MB
+	in := start(t, sony.URL)
+	upd := strings.Replace(gameURL, "_0.pkg", "_1.pkg", 1)
+
+	// The console jumps 40 MB into part 1: it only wants a piece.
+	r, body := in.consoleGet(t, upd, "bytes=41943040-41943139")
+	if r.StatusCode != 206 || !bytes.Equal(body, sony.partBody(1)[41943040:41943140]) {
+		t.Fatalf("forward: %d", r.StatusCode)
+	}
+	time.Sleep(500 * time.Millisecond)
+	if hits := sony.hits.Load(); hits != 1 {
+		t.Fatalf("psxdh probed Sony %d times for an update", hits-1)
+	}
+	st := in.state(t)
+	if len(st.Titles) != 1 || !st.Titles[0].Update {
+		t.Fatalf("expected an update card: %+v", st.Titles)
+	}
+	resp, _ := http.Get(in.base() + "/api/urls.txt?need=1")
+	txt, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if len(bytes.TrimSpace(txt)) != 0 {
+		t.Fatalf("no links should be offered for an update: %q", txt)
+	}
+
+	// The user disagrees: download it on the PC. All parts are found.
+	resp, err := http.Post(in.base()+"/api/mode", "application/json",
+		strings.NewReader(`{"package":"EP0000-PPSA01234_00-GAME000000000000","mode":"pc"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("mode: %d", resp.StatusCode)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		resp, _ := http.Get(in.base() + "/api/urls.txt?need=1")
+		txt, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if len(strings.Fields(string(txt))) == 3 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("parts not offered after choosing PC: %q", txt)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }

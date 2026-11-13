@@ -70,7 +70,7 @@ func TestStatusLifecycle(t *testing.T) {
 	}
 
 	f.track.SetSize(f.key, 100)
-	f.track.AddFromSony(f.key, 10)
+	f.track.AddFromSony(f.key, 10, 10)
 	if s := f.status(t); s != StatusFromSony {
 		t.Fatalf("console pulling from Sony: %s", s)
 	}
@@ -101,7 +101,7 @@ func TestStatusLifecycle(t *testing.T) {
 func TestSentCountsBytesFromSonyAndPC(t *testing.T) {
 	f := newFixture(t)
 	f.track.SetSize(f.key, 100)
-	f.track.AddFromSony(f.key, 30) // before the user paused the console
+	f.track.AddFromSony(f.key, 30, 30) // before the user paused the console
 	f.write(t, n0, 100)
 	f.track.AddFromLibrary(f.key, 70) // resumed from the PC
 	f.h.now = func() time.Time { return time.Now().Add(time.Minute) }
@@ -204,4 +204,55 @@ func readBody(t *testing.T, resp *http.Response) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+func TestUpdatesAreLeftToTheConsole(t *testing.T) {
+	f := newFixture(t)
+	f.track.SetSize(f.key, 80<<30)
+	f.track.NoteRequest(f.key, 40<<30) // console jumps into the middle: an update
+
+	st := f.h.Build()
+	if len(st.Titles) != 1 || !st.Titles[0].Update || !st.Titles[0].Detected {
+		t.Fatalf("expected an update card: %+v", st.Titles)
+	}
+	if s := st.Titles[0].Files[0].Status; s != StatusConsole {
+		t.Fatalf("status %s", s)
+	}
+	if st.Counts[StatusNeeded] != 0 {
+		t.Fatal("updates must not count as needing download")
+	}
+
+	srv := httptest.NewServer(f.h)
+	defer srv.Close()
+	resp, _ := http.Get(srv.URL + "/api/urls.txt?need=1")
+	if body := readBody(t, resp); body != "" {
+		t.Fatalf("update links must not be offered for download: %q", body)
+	}
+
+	// The user says: download it on the PC after all.
+	var asked string
+	f.h.OnDownloadOnPC = func(pkg string) { asked = pkg }
+	resp, err := http.Post(srv.URL+"/api/mode", "application/json", strings.NewReader(`{"package":"EP0000-PPSA01234_00-GAME","mode":"pc"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent || asked != "EP0000-PPSA01234_00-GAME" {
+		t.Fatalf("mode: %d, asked %q", resp.StatusCode, asked)
+	}
+	if st := f.h.Build(); st.Titles[0].Update {
+		t.Fatal("override to PC ignored")
+	}
+	resp, _ = http.Get(srv.URL + "/api/urls.txt?need=1")
+	if body := readBody(t, resp); strings.TrimSpace(body) != u0 {
+		t.Fatalf("link should be offered now: %q", body)
+	}
+
+	for _, bad := range []string{`{"package":"EP0000-PPSA01234_00-GAME","mode":"x"}`, `{"package":"nope","mode":"pc"}`, `garbage`} {
+		resp, _ := http.Post(srv.URL+"/api/mode", "application/json", strings.NewReader(bad))
+		resp.Body.Close()
+		if resp.StatusCode < 400 {
+			t.Errorf("%s accepted", bad)
+		}
+	}
 }

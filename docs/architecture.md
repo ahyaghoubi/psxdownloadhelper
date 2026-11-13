@@ -63,6 +63,17 @@ number below the known part in parallel and counting upwards until the first
 404. Found parts are listed with their real sizes. No search runs when the
 requested part is already on the PC.
 
+## Games vs updates
+
+Every file belongs to a package (its name without the part number, `_sc`
+or `-DP`). When the console asks Sony for a byte range starting more than
+32 MB past what it already has of that file, the package is marked as an
+update: the console is fetching scattered pieces of a large package, so
+downloading the whole package on the PC would waste time. Updates get no part
+search and are left out of the links to copy. The user can override it
+either way from the dashboard (`POST /api/mode`); the choice is saved with
+the links.
+
 ## Why polling instead of fsnotify
 
 The library holds tens of files at most. A rescan every second is cheap,

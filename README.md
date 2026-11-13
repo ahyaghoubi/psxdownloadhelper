@@ -91,6 +91,11 @@ releases still load; settings for removed features are ignored.
 - **Multi-part games:** as soon as the console asks for any part
   (`…_0.pkg`, `…_51.pkg`), psxdh asks Sony which other parts exist and lists
   them all, so you can download the whole game with the console switched off.
+- **Updates are left to the console.** For an update the console fetches
+  only the changed pieces of a large package, so psxdh doesn't ask you to
+  download it: it shows an *Update* card and the console downloads it
+  itself. Spotted by the console jumping into the middle of a package;
+  if psxdh guesses wrong, use *It's an update* or *Download on PC instead*.
 - **Links survive restarts.** Captured links are saved to `links.json` next
   to the config file. Press **Clear** to forget them.
 - **Links can expire.** If your downloader gets "403 Forbidden", start the
