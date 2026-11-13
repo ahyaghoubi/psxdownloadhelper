@@ -99,10 +99,18 @@ releases still load; settings for removed features are ignored.
 
 ## Development
 
+Needs Go (the version in `go.mod`). Run `make` to list commands:
+
 ```bash
-go test -race ./...          # unit tests plus end-to-end tests of the real binary
-go build ./cmd/psxdh
+make run                           # build and start psxdh, opens the dashboard
+make run ARGS="--library ~/Games"  # pass flags through
+make test                          # unit tests plus end-to-end tests of the real binary
+make check                         # formatting, vet and tests, as CI runs them
+make build                         # ./psxdh for this machine
+make dist                          # binaries for every OS/arch in ./dist
 ```
+
+Without `make` (for example on Windows): `go run ./cmd/psxdh`, `go test -race ./...`.
 
 The end-to-end tests in [cmd/psxdh/e2e_test.go](cmd/psxdh/e2e_test.go) build
 the binary, run it, and play console, Sony CDN and FDM against it.
