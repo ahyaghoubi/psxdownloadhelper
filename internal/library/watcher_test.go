@@ -142,6 +142,154 @@ func TestWatcherIgnoresInProgressSuffixes(t *testing.T) {
 	}
 }
 
+func TestWatcherIgnoresPartialCacheDirectory(t *testing.T) {
+	w, idx, dir := testWatcher(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.Run(ctx)
+
+	partDir := filepath.Join(dir, ".psxdh-partial")
+	if err := os.MkdirAll(partDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	part := filepath.Join(partDir, "game.pkg.partial")
+	if err := os.WriteFile(part, []byte("partial"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	meta := part + ".meta"
+	if err := os.WriteFile(meta, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case ev := <-w.Events():
+		t.Fatalf("partial cache internals should not emit library events, got %+v", ev)
+	case <-time.After(350 * time.Millisecond):
+	}
+	if got, _ := idx.Stats(); got != 0 {
+		t.Fatalf("partial cache internals should not be indexed, got %d files", got)
+	}
+}
+
+func TestWatcherWaitsForAria2SidecarRemoval(t *testing.T) {
+	w, idx, dir := testWatcher(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.Run(ctx)
+
+	target := filepath.Join(dir, "aria2.pkg")
+	sidecar := target + ".aria2"
+	if err := os.WriteFile(target, []byte("partial"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sidecar, []byte("state"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case ev := <-w.Events():
+		if ev.Kind == KindStable && ev.Basename == "aria2.pkg" {
+			t.Fatal("aria2 target became stable while sidecar existed")
+		}
+	case <-time.After(350 * time.Millisecond):
+	}
+	if _, ok := idx.Resolve(mustParse(t, "http://example.com/aria2.pkg")); ok {
+		t.Fatal("aria2 target should not be indexed while sidecar exists")
+	}
+
+	if err := os.Remove(sidecar); err != nil {
+		t.Fatal(err)
+	}
+	ev := waitForEvent(t, w.Events(), KindStable, "aria2.pkg", 2*time.Second)
+	if ev.Size != int64(len("partial")) {
+		t.Errorf("stable size = %d", ev.Size)
+	}
+	if _, ok := idx.Resolve(mustParse(t, "http://example.com/aria2.pkg")); !ok {
+		t.Fatal("aria2 target should be indexed after sidecar removal")
+	}
+}
+
+func TestWatcherIndexesFilesInExistingSubdirectories(t *testing.T) {
+	dir := t.TempDir()
+	nested := filepath.Join(dir, "PPSA01234")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	idx, err := NewIndex(dir, LayoutBasename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := NewWatcher(idx, WatcherConfig{
+		Settle:       200 * time.Millisecond,
+		PollInterval: 50 * time.Millisecond,
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.Run(ctx)
+
+	target := filepath.Join(nested, "nested.pkg")
+	if err := os.WriteFile(target, []byte("nested"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	waitForEvent(t, w.Events(), KindStable, "nested.pkg", 2*time.Second)
+	if _, ok := idx.All()["nested.pkg"]; !ok {
+		t.Fatal("nested.pkg missing from index")
+	}
+}
+
+func TestWatcherIndexesFilesInNewSubdirectories(t *testing.T) {
+	w, idx, dir := testWatcher(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.Run(ctx)
+
+	nested := filepath.Join(dir, "PPSA01234")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Give fsnotify a moment to deliver the directory create event so the
+	// watcher can add the new directory before the file lands inside it.
+	time.Sleep(100 * time.Millisecond)
+	target := filepath.Join(nested, "new-nested.pkg")
+	if err := os.WriteFile(target, []byte("nested"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	waitForEvent(t, w.Events(), KindStable, "new-nested.pkg", 2*time.Second)
+	if _, ok := idx.All()["new-nested.pkg"]; !ok {
+		t.Fatal("new-nested.pkg missing from index")
+	}
+}
+
+func TestWatcherIndexesFilesInRenamedSubdirectory(t *testing.T) {
+	w, idx, dir := testWatcher(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.Run(ctx)
+
+	// Build a populated directory outside the library, then move it in
+	// atomically. fsnotify delivers a single create for the directory with the
+	// file already inside it, so the watcher must scan the new subtree to find
+	// the file — there is no per-file create event to react to.
+	staging := dir + "-staging"
+	if err := os.MkdirAll(staging, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "moved.pkg"), []byte("moved-in"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(staging, filepath.Join(dir, "PPSA01234")); err != nil {
+		t.Fatal(err)
+	}
+	waitForEvent(t, w.Events(), KindStable, "moved.pkg", 2*time.Second)
+	if _, ok := idx.All()["moved.pkg"]; !ok {
+		t.Fatal("moved.pkg missing from index")
+	}
+}
+
 func TestWatcherEmitsRemovedOnDelete(t *testing.T) {
 	w, idx, dir := testWatcher(t)
 	ctx, cancel := context.WithCancel(context.Background())

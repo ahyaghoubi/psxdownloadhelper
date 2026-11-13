@@ -6,6 +6,7 @@
 package serve
 
 import (
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -61,5 +62,5 @@ func (h *Handler) ServeFile(w http.ResponseWriter, r *http.Request, path string)
 	// http.ServeContent handles Range, If-Range, 206/416, and HEAD correctly.
 	// It streams via io.Copy under the hood, so memory usage is constant
 	// regardless of file size.
-	http.ServeContent(w, r, fi.Name(), fi.ModTime(), f)
+	http.ServeContent(w, r, fi.Name(), fi.ModTime(), io.NewSectionReader(f, 0, fi.Size()))
 }

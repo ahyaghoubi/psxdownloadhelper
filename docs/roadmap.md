@@ -31,10 +31,11 @@ back to the console over LAN with full HTTP `Range` support.
 5. Console retries or resumes the request; the proxy serves the local file
    with `206 Partial Content` so the install bar advances.
 
-**No built-in downloader in v1.** The PC user keeps full control of
-bandwidth, scheduling, mirrors, and resume via FDM. aria2, IDM, JDownloader,
-curl, and wget all work the same way — the app just needs to hand off a URL
-list.
+For the classic proxy workflow, the PC user keeps full control of bandwidth,
+scheduling, mirrors, and resume via FDM, aria2, IDM, JDownloader, curl, or
+wget. For the distributed cluster workflow, ADR 0005 deliberately adds a
+managed `aria2c` downloader so master/slave nodes can coordinate part
+downloads without manual handoff.
 
 ### Success criteria (v1.0)
 
@@ -111,7 +112,7 @@ sequenceDiagram
 | --- | --- | --- | --- | --- |
 | Windows | yes | yes | yes | yes |
 | macOS / Linux | no | yes (CLI) | no | **yes** |
-| PS5 game transfer | community | untested | yes | **yes (validated)** |
+| PS5 game transfer | community | untested | yes | **implemented; hardware validation pending** |
 | Open source | GPL-3.0 | yes | MIT | **MIT** |
 | Match rules | built-in | one regex | broad extension | external rule packs + defaults |
 | Range / resume serve | yes | partial | yes | yes (first-class) |
@@ -252,8 +253,8 @@ All defaults preserve the pre-2.5 behaviour bit-for-bit.
 - PS4 1.00 launch-version workflow guide automation.
 - ~~mDNS announce proxy on LAN~~ — **shipped** (moved to Phase 3, ADR 0004).
 - Optional native GUI (only if the web dashboard proves insufficient).
-- *Built-in downloader is deliberately not on this list.* If demand emerges,
-  revisit — but FDM already does this better.
+- Additional downloader engines beyond managed `aria2c` (only if real demand
+  emerges; FDM / aria2 already cover the main workflows well).
 
 ---
 

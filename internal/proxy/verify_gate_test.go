@@ -85,6 +85,42 @@ func TestVerifyFailedFileIsForwardedNotServed(t *testing.T) {
 	}
 }
 
+func TestAria2InProgressFileIsForwardedNotServed(t *testing.T) {
+	dir := t.TempDir()
+	local := filepath.Join(dir, "downloading.pkg")
+	if err := os.WriteFile(local, []byte("INCOMPLETE LOCAL BYTES"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(local+".aria2", []byte("aria2 state"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var upstreamHits atomic.Int32
+	const upstreamBody = "fresh bytes from upstream while local aria2 is incomplete"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits.Add(1)
+		_, _ = io.WriteString(w, upstreamBody)
+	}))
+	defer upstream.Close()
+
+	res := &gateResolver{path: local, state: library.VerifyUnchecked}
+	proxySrv := makeGateProxy(t, res, mustHost(t, upstream.URL), false)
+	client := proxiedClient(t, proxySrv)
+
+	resp, err := client.Get(upstream.URL + "/downloading.pkg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	got, _ := io.ReadAll(resp.Body)
+	if string(got) != upstreamBody {
+		t.Errorf("expected upstream body (aria2 local file is incomplete), got %q", got)
+	}
+	if upstreamHits.Load() == 0 {
+		t.Errorf("upstream was never hit; aria2 in-progress local file was wrongly served")
+	}
+}
+
 func TestVerifyOKFileIsServedLocally(t *testing.T) {
 	dir := t.TempDir()
 	local := filepath.Join(dir, "ok.pkg")

@@ -9,9 +9,9 @@ package doctor
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -38,6 +38,7 @@ var DefaultPSNHosts = []string{
 
 // Report is the result of a `doctor` run.
 type Report struct {
+	Effective ResolverResult
 	Resolvers []ResolverResult
 	Hosts     []HostResult
 	Aria2     Aria2Result
@@ -67,13 +68,16 @@ type LookupResult struct {
 	Err     string
 }
 
-// HostResult records a direct TCP+TLS handshake to host:443 using the
-// stdlib resolver. It is the "is the network even reachable?" baseline
-// against which the per-resolver Lookups are interpreted.
+// HostResult records a direct HTTP reachability probe to the CDN host using
+// the stdlib resolver. PlayStation PKG URLs observed by psxdh are plain HTTP,
+// so this intentionally avoids HTTPS/TLS certificate checks that can be
+// misleading on Akamai hostnames.
 type HostResult struct {
 	Host    string
 	Latency time.Duration
-	TLSOK   bool
+	OK      bool
+	Status  int
+	TLSOK   bool // Deprecated: kept for older dashboard clients; mirrors OK.
 	Err     string
 }
 
@@ -81,9 +85,9 @@ type HostResult struct {
 type CheckOptions struct {
 	// Hosts to probe. Empty means DefaultPSNHosts.
 	Hosts []string
-	// HandshakeTimeout caps each TCP+TLS attempt. Zero means 5s.
+	// HandshakeTimeout caps each HTTP reachability probe. Zero means 5s.
 	HandshakeTimeout time.Duration
-	// SkipHandshake disables the TLS check (useful in CI environments
+	// SkipHandshake disables the HTTP reachability check (useful in CI environments
 	// with no internet).
 	SkipHandshake bool
 }
@@ -102,8 +106,25 @@ func Check(ctx context.Context, cfg config.NetworkConfig, opts CheckOptions) *Re
 	}
 
 	rep := &Report{}
+	resolverTimeout := dnsProbeTimeout(cfg.DNS)
+	effective, _, err := netresolve.NewFromConfig(netresolve.Config{
+		Mode:            cfg.DNS.Mode,
+		Resolvers:       cfg.DNS.Resolvers,
+		Timeout:         cfg.DNS.Timeout(),
+		CacheTTL:        cfg.DNS.CacheTTL(),
+		CacheMaxEntries: cfg.DNS.CacheMaxEntries,
+		HealthRanking:   cfg.DNS.Health.Enabled,
+	})
+	if err != nil {
+		rep.Effective = ResolverResult{Label: "effective proxy DNS chain", Err: err.Error()}
+	} else {
+		rep.Effective = runResolverProbe(ctx, labelledResolver{
+			label: "effective proxy DNS chain",
+			r:     effective,
+		}, hosts, resolverTimeout)
+	}
 	for _, lbl := range describeResolvers(cfg.DNS) {
-		rep.Resolvers = append(rep.Resolvers, runResolverProbe(ctx, lbl, hosts))
+		rep.Resolvers = append(rep.Resolvers, runResolverProbe(ctx, lbl, hosts, resolverTimeout))
 	}
 	if !opts.SkipHandshake {
 		for _, h := range hosts {
@@ -178,20 +199,27 @@ func describeResolvers(d config.DNSConfig) []labelledResolver {
 	return out
 }
 
+func dnsProbeTimeout(d config.DNSConfig) time.Duration {
+	if t := d.Timeout(); t > 0 {
+		return t
+	}
+	return 1500 * time.Millisecond
+}
+
 type labelledResolver struct {
 	label string
 	r     netresolve.Resolver
 	err   string
 }
 
-func runResolverProbe(ctx context.Context, lbl labelledResolver, hosts []string) ResolverResult {
+func runResolverProbe(ctx context.Context, lbl labelledResolver, hosts []string, timeout time.Duration) ResolverResult {
 	rr := ResolverResult{Label: lbl.label, Err: lbl.err}
 	if rr.Err != "" {
 		return rr
 	}
 	for _, h := range hosts {
 		start := time.Now()
-		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		probeCtx, cancel := context.WithTimeout(ctx, timeout)
 		ips, _, err := lbl.r.LookupHost(probeCtx, h)
 		cancel()
 		out := LookupResult{Host: h, Latency: time.Since(start)}
@@ -211,20 +239,31 @@ func runHostProbe(ctx context.Context, host string, timeout time.Duration) HostR
 	start := time.Now()
 	probeCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	d := tls.Dialer{
-		NetDialer: &net.Dialer{Timeout: timeout},
-		Config: &tls.Config{
-			ServerName: host,
-			MinVersion: tls.VersionTLS12,
-		},
-	}
-	conn, err := d.DialContext(probeCtx, "tcp", host+":443")
 	res := HostResult{Host: host, Latency: time.Since(start)}
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, "http://"+host+"/", nil)
 	if err != nil {
 		res.Err = err.Error()
 		return res
 	}
-	defer conn.Close()
+	req.Header.Set("Range", "bytes=0-0")
+	client := &http.Client{
+		Transport: &http.Transport{
+			DisableCompression: true,
+		},
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Do(req)
+	res.Latency = time.Since(start)
+	if err != nil {
+		res.Err = err.Error()
+		return res
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
+	res.Status = resp.StatusCode
+	res.OK = true
 	res.TLSOK = true
 	return res
 }

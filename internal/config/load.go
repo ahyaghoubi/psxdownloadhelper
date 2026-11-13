@@ -13,10 +13,10 @@ import (
 )
 
 // Default returns a Config populated with the defaults documented in
-// docs/configuration.md. Defaults target PS5 on Iranian networks: dashboard
-// on, cluster master with master-as-node, DoH+UDP resolvers, forward retry,
-// partial cache, and integrity verification. Users elsewhere can override via
-// YAML.
+// docs/configuration.md. Defaults target a fast, low-surprise PS5 proxy:
+// dashboard on, DoH+UDP resolvers with health ranking, forward retry, and
+// integrity verification. Disk-heavy features (partial cache, cluster
+// downloader) are opt-in so a zero-config run does not cap pass-through speed.
 func Default() *Config {
 	return &Config{
 		Proxy: ProxyConfig{Listen: "0.0.0.0:8080"},
@@ -28,12 +28,12 @@ func Default() *Config {
 			Layout:         "basename",
 			Watch:          true,
 			StableSettleMs: 2000,
-			IgnoreSuffixes: []string{".part", ".fdmdownload", ".tmp", ".crdownload"},
+			IgnoreSuffixes: []string{".part", ".fdmdownload", ".tmp", ".crdownload", ".aria2"},
 		},
 		Match: MatchConfig{PS4: false, PS5: true},
 		Capture: CaptureConfig{
 			LogIgnored:         false,
-			ExportFormats:      []string{"txt", "fdm", "aria2"},
+			ExportFormats:      []string{"txt", "aria2"},
 			PrefetchSCMetadata: false,
 			Persist:            PersistConfig{Enabled: false, FSync: false},
 		},
@@ -56,7 +56,7 @@ func Default() *Config {
 				Jitter:           0.2,
 			},
 			PartialCache: PartialCacheConfig{
-				Enabled:      true,
+				Enabled:      false,
 				MinSizeBytes: 1 << 20, // 1 MiB
 				Resume:       true,
 			},
@@ -101,10 +101,10 @@ func Default() *Config {
 			MaxConcurrent:        4,
 		},
 		Cluster: ClusterConfig{
-			Enabled:      true,
+			Enabled:      false,
 			Role:         "master",
 			Bind:         "0.0.0.0:8082",
-			MasterAsNode: true,
+			MasterAsNode: false,
 		},
 		Jobs: JobsConfig{ImportEnumerate: true},
 		Log:  LogConfig{Level: "info", JSON: false},
@@ -263,6 +263,9 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("forward.mode: must be 'auto', 'cache' or 'strict', got %q", c.Forward.Mode)
 	}
+	if !c.Forward.PassthroughHTTPS {
+		return errors.New("forward.passthrough_https: must be true; psxdh never MITMs HTTPS")
+	}
 	if err := validateRetry(c.Forward.Retry); err != nil {
 		return err
 	}
@@ -270,6 +273,9 @@ func (c *Config) Validate() error {
 		return err
 	}
 	if err := validateNetwork(c.Network); err != nil {
+		return err
+	}
+	if err := validateCapture(c.Capture); err != nil {
 		return err
 	}
 	if err := validatePersist(c.Capture.Persist); err != nil {
@@ -380,6 +386,17 @@ func validateNetwork(n NetworkConfig) error {
 	return nil
 }
 
+func validateCapture(c CaptureConfig) error {
+	for _, format := range c.ExportFormats {
+		switch strings.ToLower(strings.TrimSpace(format)) {
+		case "txt", "aria2":
+		default:
+			return fmt.Errorf("capture.export_formats: must contain only txt or aria2, got %q", format)
+		}
+	}
+	return nil
+}
+
 func validateCluster(c ClusterConfig) error {
 	if !c.Enabled {
 		return nil
@@ -394,6 +411,9 @@ func validateCluster(c ClusterConfig) error {
 	}
 	if c.Role == "slave" && c.MasterURL == "" {
 		return errors.New("cluster.master_url is required for a slave node")
+	}
+	if c.Role == "slave" && c.Token == "" {
+		return errors.New("cluster.token is required for a slave node")
 	}
 	return nil
 }

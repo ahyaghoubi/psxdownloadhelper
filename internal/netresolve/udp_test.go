@@ -57,6 +57,29 @@ func fakeUDPDNS(t *testing.T, a [4]byte) (addr string, stop func()) {
 	}
 }
 
+func silentUDPDNS(t *testing.T) (addr string, stop func()) {
+	t.Helper()
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 1500)
+		for {
+			_ = pc.SetReadDeadline(time.Now().Add(5 * time.Second))
+			if _, _, err := pc.ReadFrom(buf); err != nil {
+				return
+			}
+		}
+	}()
+	return pc.LocalAddr().String(), func() {
+		_ = pc.Close()
+		<-done
+	}
+}
+
 func TestUDPResolverHappyPath(t *testing.T) {
 	addr, stop := fakeUDPDNS(t, [4]byte{8, 8, 4, 4})
 	defer stop()
@@ -87,14 +110,16 @@ func TestUDPResolverIPLiteralPassesThrough(t *testing.T) {
 	}
 }
 
-func TestUDPResolverDialFailureSurfaces(t *testing.T) {
-	// Reserved discard address that should refuse / drop.
-	u := NewUDP("203.0.113.1:53")
+func TestUDPResolverReadFailureSurfaces(t *testing.T) {
+	addr, stop := silentUDPDNS(t)
+	defer stop()
+
+	u := NewUDP(addr)
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 	_, _, err := u.LookupHost(ctx, "example.com")
 	if err == nil {
-		t.Fatal("expected error from unreachable DNS")
+		t.Fatal("expected error from silent DNS")
 	}
 	if !strings.Contains(err.Error(), "udp") {
 		t.Errorf("err should mention udp transport: %v", err)

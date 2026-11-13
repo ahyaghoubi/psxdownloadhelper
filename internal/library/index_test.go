@@ -42,6 +42,28 @@ func TestNewIndexWalksRoot(t *testing.T) {
 	}
 }
 
+func TestNewIndexSkipsAria2InProgressTargets(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "downloading.pkg")
+	writeFile(t, target, 16)
+	writeFile(t, target+".aria2", 16)
+	writeFile(t, filepath.Join(dir, "complete.pkg"), 16)
+
+	idx, err := NewIndex(dir, LayoutBasename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := idx.Resolve(mustParse(t, "http://example.com/downloading.pkg")); ok {
+		t.Fatal("file with .aria2 sidecar should not be indexed")
+	}
+	if _, ok := idx.Resolve(mustParse(t, "http://example.com/complete.pkg")); !ok {
+		t.Fatal("complete file should be indexed")
+	}
+	if _, ok := idx.All()["downloading.pkg.aria2"]; ok {
+		t.Fatal(".aria2 control file should not be indexed")
+	}
+}
+
 func TestNewIndexEmptyDirIsValid(t *testing.T) {
 	dir := t.TempDir()
 	idx, err := NewIndex(dir, LayoutBasename)
@@ -171,6 +193,22 @@ func TestAddRemoveIdempotent(t *testing.T) {
 	files, basenames = idx.Stats()
 	if files != 0 || basenames != 0 {
 		t.Errorf("Stats after Remove = (%d, %d), want (0, 0)", files, basenames)
+	}
+}
+
+func TestAddSkipsAria2InProgressTargets(t *testing.T) {
+	dir := t.TempDir()
+	idx, err := NewIndex(dir, LayoutBasename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, "x.pkg")
+	writeFile(t, p, 16)
+	writeFile(t, p+".aria2", 16)
+	idx.Add(p)
+	idx.Add(p + ".aria2")
+	if files, basenames := idx.Stats(); files != 0 || basenames != 0 {
+		t.Fatalf("in-progress aria2 files should not be added, got files=%d basenames=%d", files, basenames)
 	}
 }
 

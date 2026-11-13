@@ -16,6 +16,8 @@ import (
 	"time"
 )
 
+const httpDownloaderCopyBufferSize = 1024 * 1024
+
 // httpDownloader is a minimal stdlib downloader: it streams a URL to disk while
 // tracking progress and speed. It is the engine used when aria2c is unavailable
 // and the deterministic engine the test suite drives (no subprocess, no aria2).
@@ -98,7 +100,7 @@ func (d *httpDownloader) run(ctx context.Context, j *httpJob, rawURL, dst string
 		return
 	}
 	cw := &countingWriter{w: f, n: &j.completed}
-	_, copyErr := io.Copy(cw, resp.Body)
+	_, copyErr := io.CopyBuffer(cw, resp.Body, make([]byte, httpDownloaderCopyBufferSize))
 	syncErr := f.Sync()
 	closeErr := f.Close()
 	if copyErr != nil {

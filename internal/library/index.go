@@ -15,6 +15,11 @@ import (
 // to depend on match.
 var titleIDRegex = regexp.MustCompile(`UP\d{4}-CUSA\d{5}|CUSA\d{5}|PPSA\d{5}`)
 
+// BuiltInInProgressSuffixes are always ignored even if older config files do
+// not list them. aria2 writes the final filename plus a .aria2 control file
+// while downloading, so the final-looking PKG must not be indexed yet.
+var BuiltInInProgressSuffixes = []string{".aria2"}
+
 // Resolver maps a captured URL to a local file path that the serve
 // package can stream back to the console.
 type Resolver interface {
@@ -87,6 +92,9 @@ func NewIndex(root string, layout Layout) (*Index, error) {
 		if d.IsDir() {
 			return nil
 		}
+		if IsInProgressPath(p, nil) {
+			return nil
+		}
 		i.addLocked(p)
 		return nil
 	})
@@ -105,6 +113,9 @@ func (i *Index) Layout() Layout { return i.layout }
 // Add records a file in the index. Idempotent — the same path will not be
 // indexed twice.
 func (i *Index) Add(p string) {
+	if IsInProgressPath(p, nil) {
+		return
+	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.addLocked(p)
@@ -250,4 +261,21 @@ func (i *Index) All() map[string][]string {
 // preferring the longer UP1234-CUSA12345 form. Empty when no id is found.
 func extractTitleHint(p string) string {
 	return titleIDRegex.FindString(p)
+}
+
+// IsInProgressPath reports whether p is either an in-progress control/temp file
+// itself or a final-looking file that still has an in-progress sidecar.
+func IsInProgressPath(p string, suffixes []string) bool {
+	base := filepath.Base(p)
+	for _, suf := range append(append([]string(nil), BuiltInInProgressSuffixes...), suffixes...) {
+		if suf != "" && strings.HasSuffix(base, suf) {
+			return true
+		}
+	}
+	for _, suf := range BuiltInInProgressSuffixes {
+		if _, err := os.Stat(p + suf); err == nil {
+			return true
+		}
+	}
+	return false
 }

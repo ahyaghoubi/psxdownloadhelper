@@ -68,11 +68,16 @@ func TestUpstreamUsesCustomResolver(t *testing.T) {
 func TestUpstreamPreferIPv4(t *testing.T) {
 	d := &resolvingDialer{preferIPv4: true}
 	ips := d.maybeFilterIPv4([]string{"2001:db8::1", "1.2.3.4", "2001:db8::2"})
-	if ips[0] != "1.2.3.4" {
-		t.Errorf("ipv4 not first: %v", ips)
+	if len(ips) != 1 || ips[0] != "1.2.3.4" {
+		t.Errorf("prefer_ipv4 should keep only IPv4 when available, got %v", ips)
 	}
-	if len(ips) != 3 {
-		t.Errorf("ipv6 dropped: %v", ips)
+}
+
+func TestUpstreamPreferIPv4FallsBackWhenOnlyIPv6(t *testing.T) {
+	d := &resolvingDialer{preferIPv4: true}
+	ips := d.maybeFilterIPv4([]string{"2001:db8::1", "2001:db8::2"})
+	if len(ips) != 2 || ips[0] != "2001:db8::1" {
+		t.Errorf("prefer_ipv4 should keep IPv6 when it is the only family, got %v", ips)
 	}
 }
 

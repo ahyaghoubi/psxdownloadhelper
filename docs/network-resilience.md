@@ -8,10 +8,11 @@ retry, proxy-chain, partial-cache, breaker, bandwidth, and persistence
 features so the proxy degrades gracefully when the network does.
 
 The built-in defaults (`config.Default()`) already ship the **Iran / ISP-poisoned
-DNS** recipe: DoH+UDP resolvers, health ranking, forward retry, partial cache,
-and integrity verification. The sections below document each knob so you can
-tune or disable them. Circuit breaker, upstream proxy chain, and bandwidth
-throttle remain off unless you opt in.
+DNS** recipe: DoH+UDP resolvers, health ranking, forward retry, and integrity
+verification. Disk-heavy features such as partial cache and cluster downloading
+remain off unless you opt in, so zero-config proxy mode keeps pass-through speed
+high. Circuit breaker, upstream proxy chain, and bandwidth throttle also remain
+off unless you opt in.
 
 - [Quick recipes](#quick-recipes)
 - [DNS resolution](#dns-resolution)
@@ -86,10 +87,10 @@ The `network.dns.mode` switch selects the resolution transport:
 
 | Mode      | Behaviour                                                                                                   |
 | --------- | ----------------------------------------------------------------------------------------------------------- |
-| `system`  | Use the OS resolver (default).                                                                              |
+| `system`  | Use the OS resolver.                                                                                        |
 | `udp`     | Plain DNS over UDP/53 against `resolvers`. System resolver remains as a final fallback.                     |
 | `doh`     | DNS-over-HTTPS (RFC 8484, POST flavour) against `resolvers`. Entries must start with `https://`.            |
-| `doh+udp` | Mix: `https://`-prefixed entries become DoH, the rest become UDP. System resolver remains as fallback.      |
+| `doh+udp` | Mix: `https://`-prefixed entries become DoH, the rest become UDP. System resolver remains as fallback. Default. |
 
 All resolvers are wrapped in an in-memory TTL cache. Responses with a
 zero TTL (notably anything the system resolver returns) fall back to
@@ -148,8 +149,9 @@ network:
 ## Forward retry policy
 
 `forward.retry.max_attempts` controls how many times the proxy will
-re-issue an upstream request when it fails transiently. The default of
-`1` disables retries (current behaviour).
+re-issue an upstream request when it fails transiently. The default is
+`4` total attempts (initial request plus retries); set it to `1` to disable
+retries.
 
 The retry classifier treats these as transient:
 
@@ -220,18 +222,20 @@ network:
 
 ## Partial cache on the forward path
 
-When `forward.partial_cache.enabled` is `true`, the proxy tees every
-successful non-Range upstream forward to disk under
-`library.dir/.psxdh-partial/`. If the response completes cleanly with
-the byte count matching `Content-Length`, the file is atomically
-renamed into `library.dir/<basename>` — a future request for the same
-URL becomes a library hit without you having to re-download anything.
+When `forward.partial_cache.enabled` is `true`, the proxy tees successful
+upstream forwards to disk under `library.dir/.psxdh-partial/` while it is
+streaming the same bytes to the console. Full `200 OK` responses are written
+from byte zero; `206 Partial Content` responses are written at the exact offset
+from `Content-Range`, so PS5 resume requests can fill the cache out of order.
+Once the recorded byte spans cover the whole object, the file is atomically
+renamed into `library.dir/<basename>` — a future request for the same URL becomes
+a library hit without you having to re-download anything.
 
 Scope (intentionally narrow for v1):
 
 - GET only.
-- No `Range` header on the request.
-- 200 OK with a positive `Content-Length`.
+- 200 OK with a positive `Content-Length`, or 206 Partial Content with a
+  parseable `Content-Range`.
 - Response size ≥ `min_size_bytes` (default 1 MiB — skips tiny manifests).
 - Same basename is not already in the library, and not currently being
   cached.
@@ -239,6 +243,18 @@ Scope (intentionally narrow for v1):
 A failed download leaves the `.partial` file behind. With `resume`
 enabled (the default), the next eligible forward continues it instead of
 starting over — see below.
+
+For maximum stream-through speed, especially on slow disks or systems with
+expensive antivirus/file-indexing hooks, disable this cache:
+
+```yaml
+forward:
+  partial_cache:
+    enabled: false
+```
+
+With the cache disabled, psxdh forwards upstream bytes directly to the console
+and no longer writes `.partial` files for missed library entries.
 
 ### Cross-run resumable downloads
 
@@ -257,12 +273,15 @@ forward:
 How it works:
 
 - Alongside each `.partial`, psxdh writes a `<basename>.partial.meta`
-  sidecar recording the upstream validators (`ETag` / `Last-Modified`)
-  and the total `Content-Length`.
+  sidecar recording the upstream validators (`ETag` / `Last-Modified`),
+  the total `Content-Length`, and the byte spans already complete on disk.
 - On the next eligible forward for the same URL, psxdh issues an upstream
   `Range: bytes=<offset>-` with `If-Range: <validator>` to fetch only the
   remainder, then serves the client the disk prefix followed by the new
   bytes (a synthesised `200` with the full length).
+- If the console asks for its own `Range`, psxdh preserves the upstream `206`
+  response exactly and records only that returned span. Out-of-order and
+  overlapping spans are coalesced before promotion.
 - The resume is **gated on the validators still matching**. If the upstream
   object changed (the server answers `200` instead of `206`, or the total
   size differs), psxdh discards the stale `.partial` and downloads fresh.
@@ -314,13 +333,20 @@ Two new subcommands ship with the resilience stack:
 
 ### `psxdh doctor`
 
-Walks every configured DNS resolver, resolves each Sony CDN host, then
-tries a direct TLS handshake on port 443. The output makes it
-immediately obvious whether DNS or transport is the bottleneck.
+Resolves each Sony CDN host through the effective proxy DNS chain, walks every
+configured DNS resolver individually, then probes plain HTTP reachability to the
+CDN host. The output makes it immediately obvious whether the live proxy chain,
+an individual resolver, or transport is the bottleneck. The reachability check
+uses HTTP because PlayStation PKG URLs captured by psxdh are HTTP; HTTPS
+certificate checks against Akamai edge hostnames can produce false failures.
 
 ```text
 psxdh doctor
 ────────────────────────────────────────────────────────────
+
+Effective proxy DNS chain
+  • effective proxy DNS chain
+      gst.prod.dl.playstation.net               ok   (28ms) 23.40.197.86
 
 DNS resolvers
   • https://free.shecan.ir/dns-query
@@ -331,13 +357,15 @@ DNS resolvers
   • system
       gst.prod.dl.playstation.net               FAIL (5s)  no such host
 
-Direct TLS handshakes (port 443)
-  gst.prod.dl.playstation.net                   ok   (286ms)
+Direct HTTP CDN reachability
+  gst.prod.dl.playstation.net                   HTTP 403 (286ms)
   ...
 ```
 
-Flags: `--host` (repeatable, override the default list), `--skip-tls`,
-`--timeout` (per-host TLS budget in seconds), `--config`.
+The effective chain uses `network.dns.timeout_ms`, cache settings, and DNS
+health ranking exactly like the proxy. Flags: `--host` (repeatable, override the
+default list), `--skip-tls` (legacy name; skips the HTTP reachability probe),
+`--timeout` (per-host reachability budget in seconds), `--config`.
 
 ### `psxdh probe <url>`
 

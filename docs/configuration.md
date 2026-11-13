@@ -15,13 +15,16 @@ mirrored exactly by `internal/config/config.go`.
 
 ## CLI
 
-The single binary is `psxdh`. Commands shipping in Phase 1:
+The single binary is `psxdh`. Commands:
 
 | Command | Purpose |
 | --- | --- |
-| `psxdh proxy` | Run the HTTP proxy + library watcher until interrupted. |
+| `psxdh proxy` | Run the HTTP proxy + library watcher (+ dashboard / cluster master when enabled). |
+| `psxdh node` | Run as a cluster slave node with an embedded downloader. |
 | `psxdh doctor` | Probe DNS resolvers + PSN CDN reachability. See [network-resilience.md](network-resilience.md#diagnostic-cli). |
 | `psxdh probe <url>` | Classify a URL, resolve it, and run a HEAD/GET diagnostic. |
+| `psxdh export` | Export pushable URLs from a capture JSONL as txt or aria2 input. |
+| `psxdh import` | Import a capture JSONL into a running master's job API. |
 | `psxdh version` | Print the build version. |
 | `psxdh --help` | List subcommands. |
 
@@ -76,9 +79,10 @@ Press Ctrl-C to shut down.
 
 ## config.yaml reference
 
-Defaults target **PS5 on Iranian networks**: dashboard on, cluster master with
-`master_as_node`, DoH+UDP resolvers with health ranking, forward retry, partial
-cache, and integrity verification. Override any field in a local `config.yaml`.
+Defaults target fast PS5 pass-through on networks with unreliable DNS: dashboard
+on, DoH+UDP resolvers with health ranking, forward retry, and integrity
+verification. Disk-heavy features such as partial cache and the cluster
+downloader are opt-in. Override any field in a local `config.yaml`.
 
 Full schema with default values:
 
@@ -103,6 +107,7 @@ library:
     - ".fdmdownload"
     - ".tmp"
     - ".crdownload"
+    - ".aria2"                    # aria2 control file; sibling PKG is in-progress
 
 match:
   ps4: false                      # load embedded PS4 rule pack
@@ -114,7 +119,6 @@ capture:
   log_ignored: false              # publish capture events for KindUnknown URLs
   export_formats:                 # Phase 2 — formats the export package emits
     - "txt"
-    - "fdm"
     - "aria2"
   prefetch_sc_metadata: false     # Phase 2 — fetch first 64 KB of _sc.pkg
                                   # to parse param.json for display metadata
@@ -144,9 +148,9 @@ forward:
     max_backoff_ms: 4000
     multiplier: 2.0
     jitter: 0.2
-  partial_cache:                  # Tee successful forwards to disk and
-                                  # promote them into the library on success.
-    enabled: true
+  partial_cache:                  # Tee successful forwards/ranges to disk and
+                                  # promote when the whole object is cached.
+    enabled: false                # true = resumable cache; false = fastest stream-through
     min_size_bytes: 1048576       # 1 MiB; skips tiny manifests
     resume: true                  # continue a dropped .partial next run
 
@@ -205,10 +209,10 @@ downloader:                       # embedded download engine (ADR 0005)
   max_concurrent: 4
 
 cluster:                          # master/slave distributed download (ADR 0005)
-  enabled: true
+  enabled: false
   role: "master"                  # master | slave
   node_name: ""                   # defaults to hostname
-  master_as_node: true            # master: also download as a worker node (no loopback HTTP)
+  master_as_node: false           # master: also download as a worker node (no loopback HTTP)
   bind: "0.0.0.0:8082"            # cluster/agent API listen
   master_url: ""                  # slave: base URL of the master
   token: ""                       # shared cluster auth; generated on master when empty
@@ -249,7 +253,7 @@ bind.
 | `library.layout` | yes | `basename` (default) or `per-title`. See [library layouts](#library-layouts) below. |
 | `library.watch` | no | When false, the watcher is disabled and the index is populated only by the initial walk. |
 | `library.stable_settle_ms` | no | Milliseconds of unchanged size before a file is considered stable and added to the index. Default 2000. |
-| `library.ignore_suffixes` | no | Filename suffixes that mark in-progress downloads. Files with these suffixes are skipped by the watcher; the final rename triggers a fresh `KindCreated`. |
+| `library.ignore_suffixes` | no | Filename suffixes that mark in-progress downloads. Files with these suffixes are skipped by the watcher; the final rename triggers a fresh `KindCreated`. `.aria2` is also protected as a built-in sidecar: a final-looking PKG with a sibling `<pkg>.aria2` is not served or indexed until the sidecar disappears. |
 
 #### `match`
 
@@ -264,7 +268,7 @@ bind.
 | Field | Required | Description |
 | --- | --- | --- |
 | `capture.log_ignored` | no | Publish capture events even for `KindUnknown` URLs. Default false to keep the dashboard signal-to-noise high. |
-| `capture.export_formats` | no | Formats the `export` package emits. `txt` (one URL per line) and `aria2` (input-file format with `out=`/`dir=`) are implemented; `fdm` is reserved. |
+| `capture.export_formats` | no | Formats the `export` package emits. Supported values are `txt` (one URL per line) and `aria2` (input-file format with `out=`/`dir=`). |
 | `capture.prefetch_sc_metadata` | no | Phase 2: when true, background-fetch the first 64 KB of every captured `_sc.pkg` to parse `param.json` for display metadata. |
 
 #### `handoff`
@@ -284,13 +288,13 @@ bind.
 | Field | Required | Description |
 | --- | --- | --- |
 | `forward.mode` | yes | `auto`: forward everything not in the library. `cache`: forward only classified URLs (block `unknown`). `strict`: never forward — return 502 when no local file exists. See [architecture.md](architecture.md#forward-modes). |
-| `forward.passthrough_https` | yes | Always true in v1. `CONNECT` is tunnelled as raw TCP; we never MITM HTTPS. Setting this to false would break PSN login and is rejected by the validator in spirit (kept as a config knob for transparency). |
+| `forward.passthrough_https` | yes | Always true in v1. `CONNECT` is tunnelled as raw TCP; we never MITM HTTPS. Setting this to false is rejected by the validator. |
 | `forward.retry.max_attempts` | no | Total attempts (initial + retries). Default `4`; `1` disables retry. |
 | `forward.retry.initial_backoff_ms` | no | Wait before the second attempt. |
 | `forward.retry.max_backoff_ms` | no | Cap on any single sleep. Must be ≥ `initial_backoff_ms`. |
 | `forward.retry.multiplier` | no | Backoff growth factor (default 2.0). |
 | `forward.retry.jitter` | no | Fraction in `[0,1]` to randomise each sleep (default 0.2). |
-| `forward.partial_cache.enabled` | no | When true, successful non-Range GETs are tee'd to disk and atomically promoted into the library. |
+| `forward.partial_cache.enabled` | no | When true, successful GETs are tee'd to disk while streamed to the console. Full `200` responses write from byte zero; `206` Range responses write at their `Content-Range` offsets and promote once the whole object is cached. Disable for maximum stream-through speed when disk writes are the bottleneck. |
 | `forward.partial_cache.min_size_bytes` | no | Minimum response size to cache; default 1 MiB. Below this we skip caching so we don't fill the library with tiny manifests. |
 | `forward.partial_cache.resume` | no | Continue a `.partial` left behind by a dropped forward (default true). The remainder is fetched with a Range/If-Range request, gated on the upstream validators still matching; any mismatch falls back to a fresh download. See [docs/network-resilience.md](network-resilience.md#cross-run-resumable-downloads). |
 
@@ -366,13 +370,13 @@ back. See the cluster quick-start in [README.md](../README.md).
 
 | Field | Required | Description |
 | --- | --- | --- |
-| `cluster.enabled` | no | Turn on cluster behaviour. Default true. |
+| `cluster.enabled` | no | Turn on cluster behaviour. Default false so zero-config proxy mode keeps all bandwidth for the console. |
 | `cluster.role` | when enabled | `master` or `slave`. |
 | `cluster.node_name` | no | Node label in the dashboard; defaults to the hostname. |
 | `cluster.master_as_node` | master | When true, the master also runs the embedded downloader and participates as a download worker, writing parts directly into `library.dir`. |
 | `cluster.bind` | when enabled | `host:port` for the cluster/agent API. |
 | `cluster.master_url` | slave | Base URL of the master (e.g. `http://192.168.1.10:8082`). |
-| `cluster.token` | no | Shared cluster auth; generated on the master when empty (printed in the banner). Slaves must use the same value. |
+| `cluster.token` | required for slaves | Shared cluster auth; generated on the master when empty (printed in the banner). Slaves must set the same value before startup. |
 
 #### `jobs`
 

@@ -397,8 +397,9 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		}
 
 		var yamlBytes []byte
+		var parsed *config.Config
 		if isJSONContent(r) {
-			parsed, err := config.ParseJSONAndValidate(body)
+			parsed, err = config.ParseJSONAndValidate(body)
 			if err != nil {
 				http.Error(w, "invalid config: "+err.Error(), http.StatusBadRequest)
 				return
@@ -409,7 +410,8 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		} else {
-			if _, err := config.ParseAndValidate(body); err != nil {
+			parsed, err = config.ParseAndValidate(body)
+			if err != nil {
 				http.Error(w, "invalid config: "+err.Error(), http.StatusBadRequest)
 				return
 			}
@@ -419,10 +421,13 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "create config dir: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		if err := os.WriteFile(s.deps.ConfigPath, yamlBytes, 0o644); err != nil {
+		// 0o600: the config can hold secrets (admin/cluster tokens, aria2 RPC
+		// secret), so keep it readable only by the owner.
+		if err := os.WriteFile(s.deps.ConfigPath, yamlBytes, 0o600); err != nil {
 			http.Error(w, "write config: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+		*s.deps.Config = *parsed
 		s.deps.Logger.Info("config updated via dashboard", "path", s.deps.ConfigPath)
 		writeJSON(w, map[string]string{"status": "saved", "note": "restart psxdh to apply"})
 	default:

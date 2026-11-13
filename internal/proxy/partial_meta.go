@@ -5,28 +5,37 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
 )
 
 // partialMeta is the sidecar written next to every `.partial` file. It records
-// the upstream validators so a `.partial` left behind by a dropped forward can
-// be safely resumed on a later run: we only continue appending when the
-// upstream object is provably unchanged (matching ETag / Last-Modified and the
-// same total Content-Length). On any mismatch we fall back to a fresh download
-// rather than risk stitching bytes from two different objects.
+// upstream validators and completed byte spans so a `.partial` left behind by a
+// dropped forward can be safely resumed on a later run: we only continue when
+// the upstream object is provably unchanged (matching ETag / Last-Modified and
+// the same total Content-Length). On any mismatch we fall back to a fresh
+// download rather than risk stitching bytes from two different objects.
 type partialMeta struct {
 	URL           string `json:"url"`
 	Basename      string `json:"basename"`
 	ContentLength int64  `json:"content_length"`
 	ETag          string `json:"etag,omitempty"`
 	LastModified  string `json:"last_modified,omitempty"`
+	Spans         []span `json:"spans,omitempty"`
 }
 
-// metaFromResponse captures the validators from a fresh 200 OK response.
-func metaFromResponse(rawURL, basename string, resp *http.Response) partialMeta {
+// span records a half-open byte range [Start, End) that is complete on disk.
+type span struct {
+	Start int64 `json:"start"`
+	End   int64 `json:"end"`
+}
+
+// metaFromResponse captures the validators from an upstream response. total is
+// the complete object size, not necessarily resp.ContentLength for 206 bodies.
+func metaFromResponse(rawURL, basename string, resp *http.Response, total int64) partialMeta {
 	return partialMeta{
 		URL:           rawURL,
 		Basename:      basename,
-		ContentLength: resp.ContentLength,
+		ContentLength: total,
 		ETag:          resp.Header.Get("ETag"),
 		LastModified:  resp.Header.Get("Last-Modified"),
 	}
@@ -40,6 +49,88 @@ func (m partialMeta) validator() string {
 		return m.ETag
 	}
 	return m.LastModified
+}
+
+// compatible reports whether two metadata records can describe the same
+// upstream object. Empty validators are treated as "unknown", not a conflict.
+func (m partialMeta) compatible(next partialMeta) bool {
+	if m.URL != "" && next.URL != "" && m.URL != next.URL {
+		return false
+	}
+	if m.Basename != "" && next.Basename != "" && m.Basename != next.Basename {
+		return false
+	}
+	if m.ContentLength > 0 && next.ContentLength > 0 && m.ContentLength != next.ContentLength {
+		return false
+	}
+	if m.ETag != "" && next.ETag != "" && m.ETag != next.ETag {
+		return false
+	}
+	if m.LastModified != "" && next.LastModified != "" && m.LastModified != next.LastModified {
+		return false
+	}
+	return true
+}
+
+// normaliseSpans sorts spans, drops invalid ranges, clamps to total when known,
+// and coalesces overlapping or adjacent ranges.
+func normaliseSpans(spans []span, total int64) []span {
+	if len(spans) == 0 {
+		return nil
+	}
+	clean := make([]span, 0, len(spans))
+	for _, s := range spans {
+		if s.Start < 0 {
+			s.Start = 0
+		}
+		if total > 0 && s.End > total {
+			s.End = total
+		}
+		if s.End <= s.Start {
+			continue
+		}
+		clean = append(clean, s)
+	}
+	if len(clean) == 0 {
+		return nil
+	}
+	sort.Slice(clean, func(i, j int) bool {
+		if clean[i].Start == clean[j].Start {
+			return clean[i].End < clean[j].End
+		}
+		return clean[i].Start < clean[j].Start
+	})
+	out := clean[:1]
+	for _, s := range clean[1:] {
+		last := &out[len(out)-1]
+		if s.Start <= last.End {
+			if s.End > last.End {
+				last.End = s.End
+			}
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+func (m *partialMeta) addSpan(start, end int64) {
+	m.Spans = normaliseSpans(append(m.Spans, span{Start: start, End: end}), m.ContentLength)
+}
+
+func (m partialMeta) complete() bool {
+	return m.ContentLength > 0 &&
+		len(m.Spans) == 1 &&
+		m.Spans[0].Start == 0 &&
+		m.Spans[0].End == m.ContentLength
+}
+
+func (m partialMeta) coveredPrefix() int64 {
+	spans := normaliseSpans(m.Spans, m.ContentLength)
+	if len(spans) == 0 || spans[0].Start != 0 {
+		return 0
+	}
+	return spans[0].End
 }
 
 // writeMeta atomically writes m to path (temp file + rename) so a crash mid-write

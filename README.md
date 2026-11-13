@@ -9,12 +9,13 @@ full HTTP `Range` support.
 
 It is a clean-room MIT reimplementation in the spirit of the original
 [KOPElan/PSX-Download-Helper](https://github.com/KOPElan/PSX-Download-Helper),
-with **first-class PS5 support** and a deliberate **no built-in downloader**
-design — the PC user keeps full control via FDM.
+with **first-class PS5 support**. Users can still keep full control through
+external downloaders such as FDM, while the optional distributed cluster uses a
+managed `aria2c` downloader under the hood.
 
 > **Status: Phase 1 + 2.5 complete; Phase 2 + 3 largely landed.** The proxy,
 > library watcher, classifier, CLI, and the full network-resilience stack
-> (custom DNS, retry, upstream proxy chain, partial cache, breaker,
+> (custom DNS, retry, upstream proxy chain, Range-aware partial cache, breaker,
 > bandwidth, JSONL persist, diagnostics) are wired up and tested. Now added:
 > **cross-run resumable downloads**, **integrity verification** (don't serve
 > a corrupt file), **DNS resolver health ranking**, an embedded **web
@@ -37,17 +38,14 @@ design — the PC user keeps full control via FDM.
 ```
 PS5 / PS4   ───HTTP proxy───►   psxdh  ───forward (no local file)───►   Sony CDN
                                   │                                       │
-                                  ▼                                       │
-                            captured URL                                  │
-                                  │                                       │
-                          (you copy → FDM)                                │
-                                  ▼                                       │
-                              FDM ───download───────────────────────────►─┘
+                                  │◄──────── stream response bytes ───────┘
                                   │
+                                  ├──► tee 200/206 bytes into .partial
+                                  │    (Range spans are written by offset)
                                   ▼
                           library folder
                                   │
-                       fsnotify "file stable"
+                   complete cache / fsnotify "file stable"
                                   ▼
 PS5 / PS4   ───retry with Range───►   psxdh ───serve from disk (206)───► console
 ```
@@ -93,19 +91,19 @@ go build ./cmd/psxdh
 ### Run
 
 ```bash
-# Zero-config: PS5 rules, dashboard, cluster master (downloads on this PC),
-# Iran-friendly DNS/retry/partial-cache. Proxy on 0.0.0.0:8080.
+# Zero-config: PS5 rules, dashboard, Iran-friendly DNS/retry,
+# fast stream-through forwarding. Proxy on 0.0.0.0:8080.
 ./psxdh proxy
 
 # Or with overrides:
 ./psxdh proxy --listen 0.0.0.0:8080 --library ~/Downloads/psxdh
 
-# Or with a config file (to disable cluster, change DNS, etc.):
+# Or with a config file (to enable cluster/cache, change DNS, etc.):
 ./psxdh proxy --config config.yaml
 ```
 
 **Prerequisite (cluster / `psxdh node`):** install `aria2c` on your PATH before
-starting. The embedded cluster downloader requires it by default.
+starting. The embedded cluster downloader requires it when cluster mode is enabled.
 
 | OS | Install |
 | --- | --- |
@@ -113,11 +111,13 @@ starting. The embedded cluster downloader requires it by default.
 | Debian/Ubuntu | `sudo apt install aria2` |
 | Windows | `winget install aria2.aria2` |
 
-Run `psxdh doctor` to verify DNS reachability and that `aria2c` is found. For
-local dev/CI only, set `downloader.allow_http_fallback: true` to use the
-built-in HTTP engine when aria2c is missing.
+Run `psxdh doctor` to verify DNS reachability. If you enable cluster mode, it
+also checks that `aria2c` is found. For local dev/CI only, set
+`downloader.allow_http_fallback: true` to use the built-in HTTP engine when
+aria2c is missing.
 
-The startup banner prints your LAN IP(s), dashboard URL, and cluster token.
+The startup banner prints your LAN IP(s) and dashboard URL. When cluster mode is
+enabled, it also prints the cluster token.
 When your PC has more than one network interface (e.g. Wi‑Fi plus a direct
 Ethernet cable to the PS5), every address is listed — use the IP on the
 interface your console is plugged into:
@@ -129,7 +129,6 @@ psxdh dev
     192.168.1.42   (en0)
   proxy listen:  0.0.0.0:8080
   dashboard:     http://192.168.1.42:8081/?token=4f3c…
-  cluster:       master (token abc123…)
   library dir:   /home/me/Downloads/psxdh
   library layout: basename
   match rules:   6
@@ -220,7 +219,8 @@ cluster:
 
 1. Start the master: `./psxdh proxy --config docs/examples/config.work.yaml`
    — it imports the capture file on startup and queues parts for download.
-2. Attach slaves: `./psxdh node --config config.work.yaml` on other work PCs.
+2. Copy the master's printed `cluster` token into each slave's config, then
+   attach slaves: `./psxdh node --config config.work.yaml` on other work PCs.
 3. Or import later via the dashboard **Import capture** button, or:
 
 ```bash
@@ -256,15 +256,14 @@ Example profiles: [docs/examples/config.home.yaml](docs/examples/config.home.yam
 
 `psxdh` is configured by `config.yaml` (see
 [docs/configuration.md](docs/configuration.md) for the full reference). With no
-config file, built-in defaults are tuned for **PS5 on Iranian networks**
-(dashboard, cluster master + `master_as_node`, Shecan-style DNS, retry, partial
-cache, verify). Override only what you need:
+config file, built-in defaults are tuned for **fast PS5 pass-through** on
+networks with unreliable DNS: dashboard on, Shecan-style DNS, DNS health ranking,
+retry, and integrity checks. Disk-heavy features such as partial cache and the
+embedded cluster downloader are opt-in. Override only what you need:
 
 ```yaml
-# Headless / FDM-only: turn off dashboard and embedded downloader.
+# Headless maximum stream-through speed.
 admin:
-  enabled: false
-cluster:
   enabled: false
 
 # PS4 titles alongside PS5:
@@ -276,18 +275,33 @@ match:
 CLI flags (`--listen`, `--library`, `--log-level`, `--config`) override the
 YAML file.
 
+If the log says `library hit` while your PS5 is resuming, psxdh is serving a
+file that already exists in `library.dir`. For stream-through only, remove any
+old/incomplete PKG from the library and keep `cluster.enabled: false`; otherwise
+the embedded aria2 cluster will intentionally download PKGs into the library.
+Files with an aria2 sidecar (`<pkg>.aria2`) are treated as in-progress and will
+not be served locally.
+
+For the absolute fastest pass-through from Sony's CDN to the console, keep
+`forward.partial_cache.enabled: false`. The partial cache is useful on unstable
+links because it writes resumable `.partial` files while forwarding, but that
+extra disk write can become the limiting factor on slow disks or busy systems.
+
 ---
 
 ## Surviving unstable networks
 
-The built-in defaults already include the Iran-friendly DNS, retry, partial
-cache, DNS health ranking, and integrity verification stack. Verify resolvers
-after first start:
+The built-in defaults already include Iran-friendly DNS, retry, DNS health
+ranking, and integrity verification. Verify resolvers after first start:
 
 ```bash
 psxdh doctor                                    # all configured resolvers
 psxdh probe https://gst.prod.dl.playstation.net/.../x.pkg
 ```
+
+`psxdh doctor` now shows the effective proxy DNS chain first (the same configured
+chain the proxy uses, including health ranking), followed by each individual
+resolver and an HTTP CDN reachability baseline that matches captured PKG URLs.
 
 If you use a local VPN, route only PSN CDN traffic through it (not enabled by
 default — your SOCKS5 port varies by app):
@@ -316,7 +330,8 @@ are grouped by section (proxy, library, network, cluster, jobs, etc.) with a typ
 control and helper text for every field. Use **Save** on a section or **Save all**
 to write changes; restart `psxdh` to apply them. Without `--config`, saves go to
 `~/.config/psxdh/config.yaml` (created on first save; loaded automatically once
-it exists).
+it exists). The file is written with owner-only (`0600`) permissions because it
+can hold secrets (admin / cluster tokens, the aria2 RPC secret).
 
 The **Sessions** panel includes per-title **Export aria2** / **Export txt**
 buttons, header **Export all** actions, and **Import capture** to upload a
@@ -390,12 +405,15 @@ enumerates the parts and farms them out to **slave** nodes; finished parts come
 back to the master, which serves them to the console. See
 [ADR 0005](docs/decisions/0005-distributed-downloader.md).
 
-This is **on by default** when you run `./psxdh proxy` with no config file
-(dashboard + cluster master + `master_as_node`). To add remote slaves, keep
-the master running and start nodes on other machines. Optional overrides:
+This is opt-in so normal proxy mode keeps all bandwidth for the console. To add
+remote slaves, enable cluster on the master, keep it running, and start nodes on
+other machines:
 
 ```yaml
 cluster:
+  enabled: true
+  role: master
+  master_as_node: true
   bind: "0.0.0.0:8082"     # cluster/agent API (default)
 downloader:
   engine: "aria2"            # requires aria2c on PATH (see prerequisite table)
@@ -405,9 +423,14 @@ downloader:
 On each slave machine:
 
 ```bash
+# Put the master's printed cluster token in config.yaml first:
+# cluster:
+#   token: "<master-token>"
 psxdh node --master http://<master-ip>:8082 --bind 0.0.0.0:8082
-# (use the master's cluster token: set cluster.token to the same value on both)
 ```
+
+Slave nodes refuse to start without `cluster.token`; use the token printed by
+the master banner so arbitrary LAN clients cannot drive a worker node.
 
 Slaves announce themselves via mDNS, so the master's dashboard can **discover**
 them, or you can **add one by IP**. The dashboard shows per-node progress and
@@ -446,15 +469,15 @@ The test suite covers:
 - `internal/proxy` — absolute-URI forwarding, `Range` pass-through,
   `CONNECT` tunnel against an `httptest.NewTLSServer`, `auto` / `cache` /
   `strict` modes, hop-by-hop header stripping, capture publication,
-  forward retry, partial cache promotion.
+  forward retry, Range-aware partial cache promotion.
 - `internal/serve` — RFC 7233 Range cases.
 - `internal/netresolve` — DoH + UDP + cache + multi-resolver fallback.
 - `internal/retry`, `internal/circuit`, `internal/bandwidth`,
   `internal/upstream` — the resilience layer.
 - `internal/persist`, `internal/verify`, `internal/doctor` — JSONL log,
   CRC framework + watcher integrity gate, diagnostic checks.
-- `internal/proxy` (partial cache) — cross-run resume, validator mismatch
-  fallback, and the corrupt/wrong-size serve gate.
+- `internal/proxy` (partial cache) — cross-run resume, Range span caching,
+  validator mismatch fallback, and the corrupt/wrong-size serve gate.
 - `internal/netresolve` — DoH + UDP + cache + multi-resolver fallback +
   health ranking.
 - `internal/admin`, `internal/session`, `internal/handoff` — dashboard API

@@ -192,7 +192,7 @@ const CONFIG_SCHEMA = [
   { section: "capture", path: "capture.log_ignored", label: "Log ignored URLs", type: "bool",
     help: "Publish capture events even for unrecognized URLs. Off by default to keep the log readable." },
   { section: "capture", path: "capture.export_formats", label: "Export formats", type: "string-list",
-    help: "Formats the export package can emit: txt, fdm, aria2." },
+    help: "Formats the export package can emit: txt, aria2." },
   { section: "capture", path: "capture.prefetch_sc_metadata", label: "Prefetch SC metadata", type: "bool",
     help: "Background-fetch the first 64 KB of _sc.pkg to parse param.json for display metadata." },
   { section: "capture", subsection: "Persist", path: "capture.persist.enabled", label: "Persist enabled", type: "bool",
@@ -233,7 +233,7 @@ const CONFIG_SCHEMA = [
   { section: "forward", subsection: "Retry", path: "forward.retry.jitter", label: "Jitter", type: "number", step: 0.05,
     help: "Random fraction in [0,1] added to each sleep to avoid thundering herds." },
   { section: "forward", subsection: "Partial cache", path: "forward.partial_cache.enabled", label: "Enabled", type: "bool",
-    help: "Tee successful forwards to disk and promote them into the library on completion." },
+    help: "Tee streamed 200/206 forwards to disk and promote only when the whole object is cached. Restart required." },
   { section: "forward", subsection: "Partial cache", path: "forward.partial_cache.min_size_bytes", label: "Min size (bytes)", type: "number", step: 1,
     help: "Minimum response size to cache. Skips tiny manifests (default 1 MiB)." },
   { section: "forward", subsection: "Partial cache", path: "forward.partial_cache.resume", label: "Resume partials", type: "bool",
@@ -836,10 +836,11 @@ async function loadDoctor() {
   el.innerHTML = '<p class="meta">probing CDN hosts…</p>';
   try {
     const rep = await getJSON("/api/doctor");
-    let html = "<table><tr><th>host</th><th>TLS</th><th>latency</th></tr>";
+    let html = "<table><tr><th>host</th><th>HTTP</th><th>latency</th></tr>";
     for (const h of (rep.Hosts || [])) {
-      const cls = h.TLSOK ? "ok" : "failed";
-      const note = h.Err ? h.Err : (h.TLSOK ? "ok" : "fail");
+      const ok = h.OK || h.TLSOK;
+      const cls = ok ? "ok" : "failed";
+      const note = h.Err ? h.Err : (h.Status ? `HTTP ${h.Status}` : (ok ? "ok" : "fail"));
       html += `<tr><td>${h.Host}</td><td><span class="pill ${cls}">${note}</span></td><td class="num">${Math.round((h.Latency||0)/1e6)}ms</td></tr>`;
     }
     el.innerHTML = html + "</table>";

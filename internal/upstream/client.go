@@ -33,8 +33,8 @@ type Config struct {
 	// Resolver, if non-nil, is used for all upstream hostname lookups.
 	// nil falls back to net.DefaultResolver behaviour.
 	Resolver netresolve.Resolver
-	// PreferIPv4 makes the dialer try IPv4 addresses first. Useful where
-	// the ISP's IPv6 path to PSN is broken (common in Iran).
+	// PreferIPv4 makes the dialer use IPv4 addresses when available. Useful
+	// where the ISP's IPv6 path to PSN is broken (common in Iran).
 	PreferIPv4 bool
 	// DialTimeout caps a single dial attempt. Zero defaults to 10s.
 	DialTimeout time.Duration
@@ -197,9 +197,9 @@ func (d *resolvingDialer) maybeFilterIPv4(ips []string) []string {
 		}
 	}
 	if len(v4) > 0 {
-		return append(v4, v6...) // v4 first, v6 still as fallback
+		return v4
 	}
-	return ips
+	return v6
 }
 
 // dialFirst tries each address in turn and returns the first success.

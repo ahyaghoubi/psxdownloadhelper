@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -144,6 +145,33 @@ func TestConfigGetPut(t *testing.T) {
 	saved, _ = os.ReadFile(cfgPath)
 	if !strings.Contains(string(saved), "7777") {
 		t.Errorf("JSON config not persisted as YAML: %s", saved)
+	}
+
+	// JSON edits from the dashboard must persist false boolean values and be
+	// reflected by subsequent GETs; otherwise unchecked boxes appear unsaved.
+	jsonBody = `{"forward":{"partial_cache":{"enabled":false,"min_size_bytes":1048576,"resume":true}}}`
+	jreq, _ = http.NewRequest(http.MethodPut, srv.URL+"/api/config", strings.NewReader(jsonBody))
+	jreq.Header.Set("Content-Type", "application/json")
+	jput = mustDo(t, jreq)
+	jput.Body.Close()
+	if jput.StatusCode != http.StatusOK {
+		t.Fatalf("PUT partial cache JSON config: got %d", jput.StatusCode)
+	}
+	persisted, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Forward.PartialCache.Enabled {
+		t.Fatalf("partial cache enabled persisted as true, want false")
+	}
+	jresp = mustGet(t, srv.URL+"/api/config?format=json")
+	defer jresp.Body.Close()
+	var got config.Config
+	if err := json.NewDecoder(jresp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Forward.PartialCache.Enabled {
+		t.Fatalf("dashboard GET returned partial cache enabled=true after save")
 	}
 
 	// PUT an invalid edit is rejected (and does not overwrite).

@@ -24,7 +24,11 @@ psxdownloadhelper/
 │   ├── match/                  # Sony CDN classification rules (PS4/PS5)
 │   ├── serve/                  # Local file handler (Range, 206)
 │   ├── library/                # Index + fsnotify watcher + path resolver
-│   ├── export/                 # FDM / aria2 / txt URL list writers
+│   ├── session/                # Per-title captured-part read model
+│   ├── admin/                  # Embedded dashboard + JSON/SSE API
+│   ├── cluster/                # Master/slave download coordination
+│   ├── downloader/             # Managed aria2c + HTTP fallback engines
+│   ├── export/                 # aria2 / txt URL list writers
 │   └── config/                 # YAML config load + validate
 ├── e2e/                        # Cross-package integration tests
 ├── docs/                       # This documentation tree (incl. ADRs)
@@ -37,11 +41,8 @@ Planned future packages (see [roadmap.md](roadmap.md) for phases):
 
 | Package | Phase | Responsibility |
 | --- | --- | --- |
-| `internal/session` | Phase 2 | Aggregate capture events into per-title sessions |
 | `internal/manifest` | Phase 2 | Parse PS5 `version.xml` / `.json` to derive expected PKG lists |
-| `internal/admin` | Phase 2 | REST + WebSocket for the embedded web dashboard |
-| `internal/handoff` | Phase 2 | Best-effort "Send to FDM" (clipboard / deep link / batch) |
-| `web/` | Phase 2 | Embedded static dashboard (`embed.FS`) |
+| `internal/handoff/fdm` | Phase 2 | Best-effort "Send to FDM" (clipboard / deep link / batch) |
 | `testdata/urls/` | Phase 0/1 | Redacted real-world URL fixtures |
 
 ---
@@ -56,7 +57,12 @@ Planned future packages (see [roadmap.md](roadmap.md) for phases):
 | `match` | Pluggable classification rules: host suffix + path regex → `Kind`. PS4 + PS5 rule packs as embedded YAML, externally overridable |
 | `serve` | Streams files via `http.ServeContent`: `Accept-Ranges`, `206 Partial Content`, RFC 7233 edge cases, constant memory |
 | `library` | URL → local path resolver; recursive index keyed by basename; `fsnotify` watcher with partial-write debounce |
-| `export` | Write captured URL lists as `.txt` (Phase 1), FDM batch (Phase 2), aria2 input (Phase 2) |
+| `session` | Aggregate capture events into per-title sessions and resolve local / verified state for the dashboard |
+| `admin` | Token-guarded dashboard and JSON/SSE API for status, sessions, library, diagnostics, exports, config edits, and job imports |
+| `handoff` | aria2 JSON-RPC push client |
+| `cluster` | Master/slave job assignment, node registry, part enumeration, and finished-part collection |
+| `downloader` | Managed aria2c subprocess plus HTTP fallback for tests/dev |
+| `export` | Write captured URL lists as `.txt` or aria2 input files |
 | `config` | YAML load + validation with defaults; CLI overrides applied by `cmd/psxdh` |
 
 Constructors follow the same shape: every package accepts a `Deps` struct (or a
@@ -154,56 +160,64 @@ mitigates the "library watcher races a partial write" risk:
 | `KindRemoved` | A delete or rename-out. |
 
 Files with one of the configured `ignore_suffixes`
-(`.part`, `.fdmdownload`, `.tmp`, `.crdownload`) never enter the state
+(`.part`, `.fdmdownload`, `.tmp`, `.crdownload`, `.aria2`) never enter the state
 machine; the final rename into the real basename triggers a fresh
 `KindCreated`. This is how the watcher cooperates with FDM, browser
-downloaders, and aria2 without seeing a half-written file.
+downloaders, and aria2 without seeing a half-written file. aria2 also gets a
+built-in sidecar guard: while `<pkg>.aria2` exists, `<pkg>` is treated as
+in-progress even though its basename looks final.
 
 The default settle window is 2 s, matching the
 [v1.0 definition of done](roadmap.md#definition-of-done-v10) ("detect new
 files within 2 s and update session state").
 
+Because `fsnotify` is not recursive, the watcher adds a watch for every
+directory in the tree and for each new subdirectory as it appears, so files
+saved into per-title subfolders are seen. When a directory shows up already
+populated — an atomic rename, or a downloader that creates files faster than
+the create event is delivered — the watcher scans the new subtree once so
+those files are not missed.
+
 ---
 
-## Session model (Phase 2)
+## Session Model
 
-The session aggregator is not implemented yet, but `match.Hint` already
-extracts the metadata it will need:
+`internal/session` is the dashboard's per-title read model. The proxy publishes
+classified capture events, `match.Hint` supplies the title and part metadata,
+and the session store deduplicates by title + basename:
 
 ```go
-// internal/match/types.go
 type Hint struct {
     TitleHint string // CUSA12345 / PPSA01234 / UP1234-CUSA12345
     PartIndex int    // _0, _1, ...  (-1 when not parseable)
 }
 ```
 
-The planned shape (subject to change as we implement it):
+The shipped JSON shape is intentionally small. It stores the capture URL and
+kind, then resolves local and verification state against the library at
+snapshot time so dashboard state follows files that are added, removed, or
+marked corrupt:
 
 ```go
-type InstallSession struct {
-    ID        string
-    Platform  string    // "ps4" | "ps5"
-    TitleID   string
-    Label     string
-    StartedAt time.Time
-    Parts     []Part
-    State     string    // capturing | ready | transferring | complete
+type Session struct {
+    Title      string
+    Parts      []Part
+    LocalCount int
+    TotalCount int
 }
 
 type Part struct {
+    Basename  string
+    Kind      string
+    PartIndex int
     URL       string
-    Kind      string    // pkg-base | pkg-app | pkg-sc | ...
-    LocalPath string
-    Size      int64
-    Status    string    // pending | local | served | skipped
-    Index     int       // _0, _1, ...
+    Local     bool
+    Verified  string // "ok" | "failed" | "unchecked"
 }
 ```
 
-Differentiating behaviours we want from the session model:
+Follow-on behaviours still tracked in the roadmap:
 
-- Auto-group parts by content-id / dirname prefix.
 - When a `manifest-json` URL is captured, optionally prefetch and pre-populate
   the expected part list.
 - PS5: when `_sc.pkg` is seen, optionally background-fetch the first 64 KB to

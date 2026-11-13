@@ -93,15 +93,12 @@ func TestJobsImportMultipart(t *testing.T) {
 }
 
 func TestJobsImportJSONPath(t *testing.T) {
-	home, err := os.UserHomeDir()
-	if err != nil {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, "psxdh-import-test")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	dir, err := os.MkdirTemp(home, "psxdh-import-test-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	jsonl := filepath.Join(dir, "capture.jsonl")
 	writeCaptureJSONL(t, jsonl)
 

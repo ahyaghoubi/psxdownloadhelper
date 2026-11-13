@@ -13,7 +13,7 @@ func TestDefaultValidates(t *testing.T) {
 	}
 }
 
-func TestDefaultIranProfile(t *testing.T) {
+func TestDefaultFastProfile(t *testing.T) {
 	c := Default()
 
 	if !c.Admin.Enabled {
@@ -22,7 +22,7 @@ func TestDefaultIranProfile(t *testing.T) {
 	if c.Match.PS4 || !c.Match.PS5 {
 		t.Errorf("match should be PS5-only, got ps4=%v ps5=%v", c.Match.PS4, c.Match.PS5)
 	}
-	if !c.Cluster.Enabled || c.Cluster.Role != "master" || !c.Cluster.MasterAsNode {
+	if c.Cluster.Enabled || c.Cluster.Role != "master" || c.Cluster.MasterAsNode {
 		t.Errorf("cluster = enabled:%v role:%q master_as_node:%v", c.Cluster.Enabled, c.Cluster.Role, c.Cluster.MasterAsNode)
 	}
 	if c.Network.DNS.Mode != "doh+udp" {
@@ -57,8 +57,8 @@ func TestDefaultIranProfile(t *testing.T) {
 	if c.Forward.Retry.MaxAttempts != 4 {
 		t.Errorf("forward.retry.max_attempts = %d, want 4", c.Forward.Retry.MaxAttempts)
 	}
-	if !c.Forward.PartialCache.Enabled {
-		t.Error("forward.partial_cache.enabled should be true")
+	if c.Forward.PartialCache.Enabled {
+		t.Error("forward.partial_cache.enabled should be false for zero-config speed")
 	}
 	if !c.Verify.OnStable {
 		t.Error("verify.on_stable should be true")
@@ -82,8 +82,8 @@ func TestLoadCanonicalExample(t *testing.T) {
 	if c.Library.StableSettleMs != 2000 {
 		t.Errorf("library.stable_settle_ms = %d, want 2000", c.Library.StableSettleMs)
 	}
-	if len(c.Library.IgnoreSuffixes) != 4 {
-		t.Errorf("library.ignore_suffixes len = %d, want 4", len(c.Library.IgnoreSuffixes))
+	if len(c.Library.IgnoreSuffixes) != 5 {
+		t.Errorf("library.ignore_suffixes len = %d, want 5", len(c.Library.IgnoreSuffixes))
 	}
 	if c.Forward.Mode != "auto" {
 		t.Errorf("forward.mode = %q, want auto", c.Forward.Mode)
@@ -131,7 +131,7 @@ func TestPartialOverridePreservesDefaults(t *testing.T) {
 	if c.Library.StableSettleMs != 2000 {
 		t.Errorf("library.stable_settle_ms should retain default 2000, got %d", c.Library.StableSettleMs)
 	}
-	if len(c.Library.IgnoreSuffixes) != 4 {
+	if len(c.Library.IgnoreSuffixes) != 5 {
 		t.Errorf("library.ignore_suffixes should retain default list, got len=%d", len(c.Library.IgnoreSuffixes))
 	}
 	if c.Forward.Mode != "auto" {
@@ -199,6 +199,15 @@ func TestValidateAcceptsAllForwardModes(t *testing.T) {
 		if err := c.Validate(); err != nil {
 			t.Errorf("forward.mode %q should validate, got %v", mode, err)
 		}
+	}
+}
+
+func TestValidateRejectsDisabledHTTPSPassthrough(t *testing.T) {
+	c := Default()
+	c.Forward.PassthroughHTTPS = false
+	err := c.Validate()
+	if err == nil || !strings.Contains(err.Error(), "passthrough_https") {
+		t.Errorf("expected passthrough_https validation error, got %v", err)
 	}
 }
 
@@ -320,6 +329,15 @@ func TestValidatePersistRequiresPathWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsUnknownExportFormat(t *testing.T) {
+	c := Default()
+	c.Capture.ExportFormats = []string{"txt", "fdm"}
+	err := c.Validate()
+	if err == nil || !strings.Contains(err.Error(), "capture.export_formats") {
+		t.Errorf("expected export format validation error, got %v", err)
+	}
+}
+
 func TestValidateBandwidthNonNegative(t *testing.T) {
 	c := Default()
 	c.Network.Bandwidth.ForwardBPS = -1
@@ -362,8 +380,8 @@ func TestLoadDownloaderAllowHTTPFallback(t *testing.T) {
 
 func TestNeedsEmbeddedDownloader(t *testing.T) {
 	c := Default()
-	if !c.NeedsEmbeddedDownloader() {
-		t.Error("default config should need embedded downloader (cluster + master_as_node)")
+	if c.NeedsEmbeddedDownloader() {
+		t.Error("default config should not need embedded downloader")
 	}
 	c.Cluster.Enabled = false
 	if c.NeedsEmbeddedDownloader() {
@@ -374,9 +392,27 @@ func TestNeedsEmbeddedDownloader(t *testing.T) {
 	if c.NeedsEmbeddedDownloader() {
 		t.Error("master without master_as_node should not need embedded downloader")
 	}
+	c.Cluster.Enabled = true
 	c.Cluster.Role = "slave"
 	if !c.NeedsEmbeddedDownloader() {
 		t.Error("slave always needs embedded downloader")
+	}
+}
+
+func TestValidateRejectsSlaveWithoutToken(t *testing.T) {
+	c := Default()
+	c.Cluster.Enabled = true
+	c.Cluster.Role = "slave"
+	c.Cluster.MasterURL = "http://127.0.0.1:8082"
+	c.Cluster.Token = ""
+	err := c.Validate()
+	if err == nil || !strings.Contains(err.Error(), "cluster.token") {
+		t.Errorf("expected cluster.token validation error, got %v", err)
+	}
+
+	c.Cluster.Token = "shared-secret"
+	if err := c.Validate(); err != nil {
+		t.Errorf("slave with token should validate, got %v", err)
 	}
 }
 
@@ -408,6 +444,7 @@ func TestResolveConfigPath(t *testing.T) {
 	})
 
 	t.Run("default without file", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
 		load, persist, err := ResolveConfigPath("")
 		if err != nil {
 			t.Fatal(err)

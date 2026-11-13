@@ -108,6 +108,22 @@ func TestRenderAria2Section(t *testing.T) {
 	}
 }
 
+func TestRenderEffectiveResolverSection(t *testing.T) {
+	var buf bytes.Buffer
+	Render(&buf, &Report{
+		Effective: ResolverResult{Label: "effective proxy DNS chain", Lookups: []LookupResult{
+			{Host: "example.com", IPs: []string{"1.2.3.4"}, Latency: time.Millisecond},
+		}},
+		Aria2: Aria2Result{Found: true, Path: "/bin/aria2c"},
+	})
+	out := buf.String()
+	for _, want := range []string{"Effective proxy DNS chain", "example.com", "1.2.3.4"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rendered output missing %q: %s", want, out)
+		}
+	}
+}
+
 func TestRenderProducesText(t *testing.T) {
 	rep := &Report{
 		Resolvers: []ResolverResult{
@@ -129,6 +145,31 @@ func TestRenderProducesText(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("rendered output missing %q: %s", want, out)
 		}
+	}
+}
+
+func TestRunHostProbeUsesHTTP(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.TLS != nil {
+			t.Fatal("host probe should use HTTP, not HTTPS")
+		}
+		if r.Header.Get("Range") != "bytes=0-0" {
+			t.Errorf("range = %q, want bytes=0-0", r.Header.Get("Range"))
+		}
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer upstream.Close()
+	u, _ := strings.CutPrefix(upstream.URL, "http://")
+
+	got := runHostProbe(context.Background(), u, 2*time.Second)
+	if got.Err != "" {
+		t.Fatalf("runHostProbe err = %s", got.Err)
+	}
+	if !got.OK || !got.TLSOK {
+		t.Fatalf("runHostProbe should mark HTTP response reachable: %+v", got)
+	}
+	if got.Status != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", got.Status, http.StatusForbidden)
 	}
 }
 

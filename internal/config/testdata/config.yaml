@@ -8,14 +8,14 @@ library:
   layout: "basename"
   watch: true
   stable_settle_ms: 2000
-  ignore_suffixes: [".part", ".fdmdownload", ".tmp", ".crdownload"]
+  ignore_suffixes: [".part", ".fdmdownload", ".tmp", ".crdownload", ".aria2"]
 match:
   ps4: true
   ps5: true
   rules_dir: ""
 capture:
   log_ignored: false
-  export_formats: ["txt", "fdm", "aria2"]
+  export_formats: ["txt", "aria2"]
   prefetch_sc_metadata: false
   persist:
     enabled: false

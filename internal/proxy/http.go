@@ -13,6 +13,8 @@ import (
 	"github.com/ahyaghoubi/psxdownloadhelper/internal/retry"
 )
 
+const proxyCopyBufferSize = 1024 * 1024
+
 // hopByHopHeaders are stripped on both forward and response per RFC 7230 §6.1.
 var hopByHopHeaders = []string{
 	"Connection",
@@ -154,7 +156,7 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, copyErr := io.Copy(w, body)
+	_, copyErr := io.CopyBuffer(w, body, make([]byte, proxyCopyBufferSize))
 	if finishPartial != nil {
 		finishPartial(copyErr)
 	}

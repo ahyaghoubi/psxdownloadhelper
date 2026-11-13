@@ -19,31 +19,24 @@ func Render(w io.Writer, rep *Report) {
 	_, _ = fmt.Fprintln(w, strings.Repeat("─", 60))
 
 	_, _ = fmt.Fprintln(w, "")
+	_, _ = fmt.Fprintln(w, "Effective proxy DNS chain")
+	renderResolverResult(w, rep.Effective)
+
+	_, _ = fmt.Fprintln(w, "")
 	_, _ = fmt.Fprintln(w, "DNS resolvers")
 	for _, r := range rep.Resolvers {
-		if r.Err != "" {
-			_, _ = fmt.Fprintf(w, "  [skip] %s — %s\n", r.Label, r.Err)
-			continue
-		}
-		_, _ = fmt.Fprintf(w, "  • %s\n", r.Label)
-		for _, l := range r.Lookups {
-			if l.Err != "" {
-				_, _ = fmt.Fprintf(w, "      %-40s  FAIL (%v) %s\n", l.Host, l.Latency.Round(1e6), trim(l.Err, 80))
-				continue
-			}
-			_, _ = fmt.Fprintf(w, "      %-40s  ok   (%v) %s\n", l.Host, l.Latency.Round(1e6), strings.Join(l.IPs, ", "))
-		}
+		renderResolverResult(w, r)
 	}
 
 	if len(rep.Hosts) > 0 {
 		_, _ = fmt.Fprintln(w, "")
-		_, _ = fmt.Fprintln(w, "Direct TLS handshakes (port 443)")
+		_, _ = fmt.Fprintln(w, "Direct HTTP CDN reachability")
 		for _, h := range rep.Hosts {
 			if h.Err != "" {
 				_, _ = fmt.Fprintf(w, "  %-40s  FAIL (%v) %s\n", h.Host, h.Latency.Round(1e6), trim(h.Err, 80))
 				continue
 			}
-			_, _ = fmt.Fprintf(w, "  %-40s  ok   (%v)\n", h.Host, h.Latency.Round(1e6))
+			_, _ = fmt.Fprintf(w, "  %-40s  HTTP %d (%v)\n", h.Host, h.Status, h.Latency.Round(1e6))
 		}
 	}
 
@@ -59,6 +52,24 @@ func Render(w io.Writer, rep *Report) {
 	}
 	if rep.Aria2.Hint != "" {
 		_, _ = fmt.Fprintf(w, "  Install: %s\n", rep.Aria2.Hint)
+	}
+}
+
+func renderResolverResult(w io.Writer, r ResolverResult) {
+	if r.Label == "" {
+		return
+	}
+	if r.Err != "" {
+		_, _ = fmt.Fprintf(w, "  [skip] %s — %s\n", r.Label, r.Err)
+		return
+	}
+	_, _ = fmt.Fprintf(w, "  • %s\n", r.Label)
+	for _, l := range r.Lookups {
+		if l.Err != "" {
+			_, _ = fmt.Fprintf(w, "      %-40s  FAIL (%v) %s\n", l.Host, l.Latency.Round(1e6), trim(l.Err, 80))
+			continue
+		}
+		_, _ = fmt.Fprintf(w, "      %-40s  ok   (%v) %s\n", l.Host, l.Latency.Round(1e6), strings.Join(l.IPs, ", "))
 	}
 }
 

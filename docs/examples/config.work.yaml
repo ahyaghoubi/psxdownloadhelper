@@ -10,6 +10,8 @@ cluster:
   enabled: true
   role: master
   master_as_node: true
+  # Copy the master's printed token into each slave node's config:
+  # token: "<master-token>"
 
 library:
   dir: "~/Downloads/psxdh"

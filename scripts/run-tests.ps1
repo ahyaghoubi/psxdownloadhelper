@@ -9,7 +9,7 @@
 # Usage:
 #   powershell -File scripts/run-tests.ps1                                   # all packages
 #   powershell -File scripts/run-tests.ps1 ./internal/proxy/...              # subset
-#   powershell -File scripts/run-tests.ps1 -- -test.v ./internal/proxy/...   # forward flags
+#   powershell -File scripts/run-tests.ps1 ./internal/proxy/... -- -test.v   # subset + verbose
 #
 # Arguments after a literal `--` are forwarded verbatim to each test binary.
 

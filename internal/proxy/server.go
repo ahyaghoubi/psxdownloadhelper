@@ -88,11 +88,16 @@ func New(d Deps) (*Server, error) {
 	}
 	var pcache *partialCache
 	if d.Config.Forward.PartialCache.Enabled {
+		var onPromote func(string)
+		if idx, ok := d.Resolver.(interface{ Add(string) }); ok {
+			onPromote = idx.Add
+		}
 		pcache = newPartialCache(
 			d.Config.Library.Dir,
 			d.Config.Forward.PartialCache.MinSizeBytes,
 			d.Config.Forward.PartialCache.Resume,
 			logger,
+			onPromote,
 		)
 	}
 	return &Server{
@@ -174,6 +179,9 @@ type expectedSizeSetter interface {
 // verify.require_size_match is set, when its on-disk size disagrees with the
 // upstream Content-Length we recorded for the same basename.
 func (s *Server) libraryServeOK(path string, u *url.URL) bool {
+	if library.IsInProgressPath(path, s.cfg.Library.IgnoreSuffixes) {
+		return false
+	}
 	store, ok := s.res.(verificationStore)
 	if !ok {
 		return true

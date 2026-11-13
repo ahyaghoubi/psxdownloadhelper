@@ -49,11 +49,13 @@ The proxy package gains two new behaviours, both opt-in:
   response bytes have been written to the client** — once we start
   streaming, a mid-stream failure bubbles up so the console can issue a
   fresh `Range` request and we don't corrupt the partial body.
-- **Partial cache**: when `forward.partial_cache.enabled`, a non-Range GET
-  forward stream is tee'd to disk in the library directory, then atomically
-  renamed to the final basename on a successful complete response. This
-  promotes a successful forward into a future library hit "for free", with
-  zero extra latency for the initial request.
+- **Partial cache**: when `forward.partial_cache.enabled`, successful GET
+  forward streams are tee'd to disk in the library directory. Full `200`
+  responses write from byte zero; `206` Range responses write at their
+  `Content-Range` offsets. Once cached spans cover the whole object, the file is
+  atomically renamed to the final basename. This promotes a successful forward
+  into a future library hit "for free", with zero extra latency for the initial
+  request.
 
 `CONNECT` tunnels remain raw TCP. None of the new layers touch HTTPS
 payload; the
@@ -136,7 +138,7 @@ Full reference in [docs/configuration.md](../configuration.md) and
 - `psxdh doctor` — resolve each configured DNS resolver, probe the PSN CDN
   hosts (`gst.prod.dl.playstation.net`, `sgst.prod.dl.playstation.net`,
   `gs2.ww.prod.dl.playstation.net`, `gs2-sec.ww.prod.dl.playstation.net`),
-  attempt a TLS handshake, summarise.
+  attempt an HTTP reachability check, summarise.
 - `psxdh probe <url>` — classify the URL against the rule pack, resolve,
   issue a `HEAD`, print headers / redirect chain. Useful when the FDM-side
   download succeeds but the console-side replay misbehaves.
