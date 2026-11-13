@@ -66,3 +66,45 @@ func TestCountersAndClear(t *testing.T) {
 		t.Fatal("clear")
 	}
 }
+
+func TestSaveAndLoad(t *testing.T) {
+	path := t.TempDir() + "/sub/links.json"
+	a := New()
+	k := seen(a, "http://h/x_0.pkg?tok=1", "PPSA00001", 0)
+	a.SetSize(k, 4000)
+	u, _ := url.Parse("http://h/x_1.pkg?tok=1")
+	if !a.Found(u, match.KindPKGApp, "PPSA00001", 1, 3000) {
+		t.Fatal("Found should add a new part")
+	}
+	if a.Found(u, match.KindPKGApp, "PPSA00001", 1, 3000) {
+		t.Fatal("Found must not add a duplicate")
+	}
+	if err := a.Save(path); err != nil {
+		t.Fatal(err)
+	}
+
+	b := New()
+	if err := b.Load(path); err != nil {
+		t.Fatal(err)
+	}
+	items, _ := b.Snapshot()
+	if len(items) != 2 || items[0].Size != 4000 || !items[0].Requested || items[1].Requested || items[1].URL != "http://h/x_1.pkg?tok=1" {
+		t.Fatalf("restored %+v", items)
+	}
+	if err := New().Load(t.TempDir() + "/missing.json"); err != nil {
+		t.Fatalf("missing file should be fine: %v", err)
+	}
+}
+
+func TestFindingStatus(t *testing.T) {
+	tr := New()
+	done := tr.StartFinding("PPSA00001")
+	if !tr.Finding()["PPSA00001"] {
+		t.Fatal("search should be reported as running")
+	}
+	done()
+	done() // safe to call twice
+	if len(tr.Finding()) != 0 {
+		t.Fatal("search should be finished")
+	}
+}

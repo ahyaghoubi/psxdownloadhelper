@@ -61,19 +61,32 @@ const (
 
 type cdn struct {
 	*httptest.Server
-	hits atomic.Int64
-	body []byte
+	hits  atomic.Int64
+	body  []byte
+	parts int // numbered parts _0.._parts-1 exist; others are 404
 }
 
-func newCDN(t *testing.T, size int) *cdn {
-	c := &cdn{body: make([]byte, size)}
+// partBody returns part i: the shared body trimmed so each part has its own size.
+func (c *cdn) partBody(i int) []byte { return c.body[:len(c.body)-i*10] }
+
+func newCDN(t *testing.T, size int) *cdn { return newGameCDN(t, size, 1) }
+
+func newGameCDN(t *testing.T, size, parts int) *cdn {
+	c := &cdn{body: make([]byte, size), parts: parts}
 	for i := range c.body {
 		c.body[i] = byte(i*31 + 7)
 	}
+	partRe := regexp.MustCompile(`_(\d+)\.pkg$`)
 	c.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c.hits.Add(1)
-		if strings.HasSuffix(r.URL.Path, ".pkg") {
-			http.ServeContent(w, r, "x.pkg", time.Time{}, bytes.NewReader(c.body))
+		if m := partRe.FindStringSubmatch(r.URL.Path); m != nil {
+			var i int
+			fmt.Sscan(m[1], &i)
+			if i >= c.parts {
+				http.NotFound(w, r)
+				return
+			}
+			http.ServeContent(w, r, "x.pkg", time.Time{}, bytes.NewReader(c.partBody(i)))
 			return
 		}
 		fmt.Fprint(w, "ok")
@@ -85,6 +98,7 @@ func newCDN(t *testing.T, size int) *cdn {
 type instance struct {
 	cmd     *exec.Cmd
 	port    string
+	home    string
 	libDir  string
 	console *http.Client // a client configured like the console: psxdh as proxy
 	exited  chan error
@@ -102,6 +116,12 @@ func (l *lockedBuf) WriteString(s string) {
 	l.b.WriteString(s)
 }
 
+func (l *lockedBuf) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
 func (l *lockedBuf) String() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -110,8 +130,13 @@ func (l *lockedBuf) String() string {
 
 func start(t *testing.T, upstream string, extra ...string) *instance {
 	t.Helper()
-	home := t.TempDir()
-	libDir := filepath.Join(t.TempDir(), "library")
+	return startIn(t, t.TempDir(), filepath.Join(t.TempDir(), "library"), upstream, extra...)
+}
+
+// startIn runs psxdh with a given home (where config.yaml and links.json
+// live) and library folder, so a test can restart it on the same state.
+func startIn(t *testing.T, home, libDir, upstream string, extra ...string) *instance {
+	t.Helper()
 	cfg := filepath.Join(home, "config.yaml")
 	conf := "log:\n  level: debug\n"
 	if upstream != "" {
@@ -127,12 +152,12 @@ func start(t *testing.T, upstream string, extra ...string) *instance {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stderr := new(bytes.Buffer)
+	stderr := new(lockedBuf)
 	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	inst := &instance{cmd: cmd, libDir: libDir, exited: make(chan error, 1), stdout: new(lockedBuf)}
+	inst := &instance{cmd: cmd, home: home, libDir: libDir, exited: make(chan error, 1), stdout: new(lockedBuf)}
 
 	portRe := regexp.MustCompile(`Console proxy\s+\S+\s+port (\d+)`)
 	found := make(chan string, 1)
@@ -192,8 +217,9 @@ type apiState struct {
 		Addr      string `json:"addr"`
 	} `json:"console"`
 	Titles []struct {
-		ID    string      `json:"id"`
-		Files []fileState `json:"files"`
+		ID      string      `json:"id"`
+		Finding bool        `json:"finding"`
+		Files   []fileState `json:"files"`
 	} `json:"titles"`
 	Library []struct {
 		Name  string `json:"name"`
@@ -493,5 +519,87 @@ func TestGracefulShutdown(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("psxdh did not stop on Ctrl+C")
+	}
+}
+
+// TestConsoleOffWorkflow is the flow for big games: the console asks for one
+// part, psxdh finds every part, the user switches the console off and
+// downloads on the PC (psxdh may even restart), then the console comes back
+// and installs everything from the PC.
+func TestConsoleOffWorkflow(t *testing.T) {
+	sony := newGameCDN(t, 4096, 4) // parts _0.._3, each a different size
+	in := start(t, sony.URL)
+
+	// Like the PS5 asking for part 51 first: the console asks for part 2 only.
+	part := func(i int) string { return strings.Replace(gameURL, "_0.pkg", fmt.Sprintf("_%d.pkg", i), 1) }
+	name := func(i int) string { return strings.Replace(gameName, "_0.pkg", fmt.Sprintf("_%d.pkg", i), 1) }
+	in.consoleGet(t, part(2), "bytes=0-0")
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		st := in.state(t)
+		if len(st.Titles) == 1 && len(st.Titles[0].Files) == 4 && !st.Titles[0].Finding {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("parts not found: %+v", st.Titles)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	for i := 0; i < 4; i++ {
+		f, _ := in.file(t, name(i))
+		if f.Size != int64(len(sony.partBody(i))) || f.Part != i || !strings.HasSuffix(f.URL, "?sig=abc") {
+			t.Errorf("part %d: %+v", i, f)
+		}
+	}
+	resp, _ := http.Get(in.base() + "/api/urls.txt?need=1")
+	txt, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if n := len(strings.Fields(string(txt))); n != 4 {
+		t.Fatalf("Copy links should give all 4 parts, got %d:\n%s", n, txt)
+	}
+
+	// Console off; psxdh restarts. The links must survive.
+	_ = in.cmd.Process.Signal(os.Interrupt)
+	select {
+	case <-in.exited:
+	case <-time.After(10 * time.Second):
+		t.Fatal("psxdh did not stop")
+	}
+	if _, err := os.Stat(filepath.Join(in.home, "links.json")); err != nil {
+		t.Fatalf("links were not saved: %v", err)
+	}
+	in2 := startIn(t, in.home, in.libDir, sony.URL)
+	st := in2.state(t)
+	if len(st.Titles) != 1 || len(st.Titles[0].Files) != 4 {
+		t.Fatalf("links lost after restart: %+v", st.Titles)
+	}
+	if st.Console.Connected {
+		t.Error("restored state must not claim the console is connected")
+	}
+
+	// FDM downloads every part into the library.
+	for i := 0; i < 4; i++ {
+		if err := os.WriteFile(filepath.Join(in2.libDir, name(i)), sony.partBody(i), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 4; i++ {
+		in2.waitStatus(t, name(i), "ready")
+	}
+
+	// The console comes back and installs every part from the PC.
+	hits := sony.hits.Load()
+	for i := 0; i < 4; i++ {
+		r, body := in2.consoleGet(t, part(i), "")
+		if r.StatusCode != 200 || !bytes.Equal(body, sony.partBody(i)) {
+			t.Fatalf("part %d from library: %d, %d bytes", i, r.StatusCode, len(body))
+		}
+	}
+	if sony.hits.Load() != hits {
+		t.Fatalf("Sony contacted %d times while installing from the PC", sony.hits.Load()-hits)
+	}
+	for i := 0; i < 4; i++ {
+		in2.waitStatus(t, name(i), "sending")
 	}
 }

@@ -39,9 +39,6 @@ proxy approach can't replace them and the README must say so.
 
 ## Ideas, only after hardware validation
 
-- **Show all parts up front.** Today later parts of a multi-part game only
-  appear when the console asks for them. PS4 JSON manifests (and possibly
-  PS5's) list every part with its size, so psxdh could list them all at once.
 - **Game names** instead of only title IDs.
 - **Windows tray icon** so the console window can be hidden.
 

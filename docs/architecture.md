@@ -32,7 +32,8 @@ psxdh itself also goes to the dashboard, so there's no loop.
 | `internal/proxy` | Forwarding, CONNECT tunnelling, serving library hits, byte counting |
 | `internal/library` | Rescans the library folder every second and decides which files are ready |
 | `internal/serve` | Streams a file with full `Range` support via `http.ServeContent` |
-| `internal/tracker` | In-memory record of captured files, sizes and bytes sent |
+| `internal/tracker` | Captured files, sizes and bytes sent; saved to `links.json` so links survive restarts |
+| `internal/parts` | From one numbered part (`…_N.pkg`), asks Sony which other parts exist |
 | `internal/dashboard` | Works out each file's status, serves the embedded page and JSON API |
 | `internal/netinfo` | LAN IPv4 addresses for the setup instructions |
 
@@ -52,6 +53,15 @@ psxdh itself also goes to the dashboard, so there's no loop.
 - **Stream, never buffer.** Forwarding and serving copy through fixed
   buffers, so memory stays flat for 100 GB games.
 - **HTTPS is opaque.** CONNECT is a byte pipe; psxdh never terminates TLS.
+
+## Finding every part
+
+The first time the console has to fetch a numbered package from Sony,
+psxdh starts a background search. It requests byte 0 of each other part
+number (same URL and query string, the console's User-Agent), checking every
+number below the known part in parallel and counting upwards until the first
+404. Found parts are listed with their real sizes. No search runs when the
+requested part is already on the PC.
 
 ## Why polling instead of fsnotify
 

@@ -97,8 +97,9 @@ type ConsoleState struct {
 
 // Title groups the files of one game or update.
 type Title struct {
-	ID    string `json:"id"`
-	Files []File `json:"files"`
+	ID      string `json:"id"`
+	Finding bool   `json:"finding"` // still looking for more parts on Sony
+	Files   []File `json:"files"`
 }
 
 // File is one captured PKG and its status.
@@ -113,6 +114,7 @@ type File struct {
 	SentBytes   int64  `json:"sentBytes"` // bytes the console took from the library
 	SonyBytes   int64  `json:"sonyBytes"` // bytes the console took from Sony
 	Status      Status `json:"status"`
+	Requested   bool   `json:"requested"` // the console asked for it (vs found by psxdh)
 	LibraryPath string `json:"libraryPath,omitempty"`
 }
 
@@ -145,6 +147,7 @@ func (h *Handler) Build() State {
 		st.Console = ConsoleState{Connected: ago < 2*time.Minute, Addr: console.Addr, AgoSec: int(ago.Seconds())}
 	}
 
+	finding := h.tracker.Finding()
 	captured := map[string]bool{}
 	byTitle := map[string]int{}
 	for _, it := range items {
@@ -163,7 +166,7 @@ func (h *Handler) Build() State {
 		if !ok {
 			i = len(st.Titles)
 			byTitle[id] = i
-			st.Titles = append(st.Titles, Title{ID: id})
+			st.Titles = append(st.Titles, Title{ID: id, Finding: finding[it.Title]})
 		}
 		st.Titles[i].Files = append(st.Titles[i].Files, f)
 	}
@@ -176,7 +179,7 @@ func (h *Handler) Build() State {
 func (h *Handler) file(it tracker.Item, now time.Time) File {
 	f := File{
 		Key: it.Key, Name: it.Name, URL: it.URL, Kind: string(it.Kind), Part: it.Part,
-		Size: it.Size, SentBytes: it.FromLibrary, SonyBytes: it.FromSony,
+		Size: it.Size, SentBytes: it.FromLibrary, SonyBytes: it.FromSony, Requested: it.Requested,
 	}
 	lf, inLibrary := h.lib.Find(it.Name)
 	if inLibrary {

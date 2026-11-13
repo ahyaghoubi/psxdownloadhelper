@@ -88,8 +88,13 @@ releases still load; settings for removed features are ignored.
 - **A file with the wrong size is never served.** When psxdh knows the real
   size from Sony, a mismatched local copy is skipped and the console
   downloads from Sony instead.
-- **Multi-part games:** the console asks for parts one at a time, so later
-  parts appear in the dashboard as the console reaches them.
+- **Multi-part games:** as soon as the console asks for any part
+  (`…_0.pkg`, `…_51.pkg`), psxdh asks Sony which other parts exist and lists
+  them all, so you can download the whole game with the console switched off.
+- **Links survive restarts.** Captured links are saved to `links.json` next
+  to the config file. Press **Clear** to forget them.
+- **Links can expire.** If your downloader gets "403 Forbidden", start the
+  download on the console again for fresh links.
 - **Firewall:** allow incoming connections to psxdh on your PC (Windows asks
   the first time).
 - **Blocked CDN?** `network.upstream_proxy` sends psxdh's plain-HTTP

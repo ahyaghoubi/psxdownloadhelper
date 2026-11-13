@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
@@ -121,6 +122,15 @@ func run(ctx context.Context, args []string, out io.Writer, openBrowser bool) er
 		return fmt.Errorf("library folder %s: %w", cfg.Library.Dir, err)
 	}
 	track := tracker.New()
+	// Captured links are saved next to the config file so a long download
+	// can outlive a restart of psxdh, with the console switched off.
+	linksPath := ""
+	if path != "" {
+		linksPath = filepath.Join(filepath.Dir(path), "links.json")
+		if err := track.Load(linksPath); err != nil {
+			logger.Warn("could not restore saved links", "err", err)
+		}
+	}
 
 	ln, err := net.Listen("tcp", cfg.Proxy.Listen)
 	if err != nil {
@@ -145,6 +155,7 @@ func run(ctx context.Context, args []string, out io.Writer, openBrowser bool) er
 		IsSelf:        selfMatcher(port),
 		UpstreamProxy: cfg.UpstreamProxyURL(),
 		Logger:        logger,
+		Context:       ctx,
 	})
 	if err != nil {
 		return err
@@ -156,6 +167,11 @@ func run(ctx context.Context, args []string, out io.Writer, openBrowser bool) er
 		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelDebug),
 	}
 	go lib.Run(ctx, time.Second)
+	saved := make(chan struct{})
+	go func() {
+		defer close(saved)
+		saveLinks(ctx, track, linksPath, logger)
+	}()
 
 	printBanner(out, port, lib.Root(), cfg)
 	if openBrowser && !*noBrowser {
@@ -173,7 +189,39 @@ func run(ctx context.Context, args []string, out io.Writer, openBrowser bool) er
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
+	<-saved
 	return nil
+}
+
+// saveLinks writes the tracker to path whenever it changes, and once more
+// when ctx ends.
+func saveLinks(ctx context.Context, t *tracker.Tracker, path string, logger *slog.Logger) {
+	if path == "" {
+		return
+	}
+	last := t.Version()
+	save := func() {
+		v := t.Version()
+		if v == last {
+			return
+		}
+		if err := t.Save(path); err != nil {
+			logger.Warn("could not save links", "path", path, "err", err)
+			return
+		}
+		last = v
+	}
+	tick := time.NewTicker(3 * time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			save()
+			return
+		case <-tick.C:
+			save()
+		}
+	}
 }
 
 func printBanner(out io.Writer, port, libDir string, cfg *config.Config) {

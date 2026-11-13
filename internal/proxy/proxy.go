@@ -11,6 +11,7 @@
 package proxy
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -21,10 +22,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ahyaghoubi/psxdownloadhelper/internal/library"
 	"github.com/ahyaghoubi/psxdownloadhelper/internal/match"
+	"github.com/ahyaghoubi/psxdownloadhelper/internal/parts"
 	"github.com/ahyaghoubi/psxdownloadhelper/internal/serve"
 	"github.com/ahyaghoubi/psxdownloadhelper/internal/tracker"
 )
@@ -41,6 +44,10 @@ type Deps struct {
 	// UpstreamProxy optionally routes forwarded HTTP requests via another proxy.
 	UpstreamProxy *url.URL
 	Logger        *slog.Logger
+	// Context bounds background part searches. Defaults to Background.
+	Context context.Context
+	// DisableFindParts turns off searching for the other parts of a game.
+	DisableFindParts bool
 }
 
 // Server implements http.Handler.
@@ -48,7 +55,11 @@ type Server struct {
 	d         Deps
 	serve     *serve.Handler
 	transport *http.Transport
+	finder    *parts.Finder
 	log       *slog.Logger
+
+	mu       sync.Mutex
+	searched map[string]bool // series already searched since start
 }
 
 // New returns a proxy Server.
@@ -73,7 +84,14 @@ func New(d Deps) (*Server, error) {
 	if d.UpstreamProxy != nil {
 		tr.Proxy = http.ProxyURL(d.UpstreamProxy)
 	}
-	return &Server{d: d, serve: serve.New(d.Logger), transport: tr, log: d.Logger}, nil
+	if d.Context == nil {
+		d.Context = context.Background()
+	}
+	return &Server{
+		d: d, serve: serve.New(d.Logger), transport: tr, log: d.Logger,
+		finder:   &parts.Finder{Transport: tr},
+		searched: make(map[string]bool),
+	}, nil
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -97,7 +115,45 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if (r.Method == http.MethodGet || r.Method == http.MethodHead) && s.serveLocal(w, r, kind, key) {
 		return
 	}
+	// Only look for the other parts when the console has to go to Sony: if
+	// this part is already on the PC, the user has the game's links.
+	if key != "" {
+		s.findParts(r, kind, hint)
+	}
 	s.forward(w, r, key)
+}
+
+// findParts starts a background search for the other parts of a numbered
+// package the first time the console asks for any part of it, so the user
+// can download the whole game without keeping the console connected.
+func (s *Server) findParts(r *http.Request, kind match.Kind, hint match.Hint) {
+	if s.d.DisableFindParts || !match.IsPackage(kind) || parts.Index(r.URL) < 0 {
+		return
+	}
+	series := parts.SeriesKey(r.URL)
+	s.mu.Lock()
+	if s.searched[series] {
+		s.mu.Unlock()
+		return
+	}
+	s.searched[series] = true
+	s.mu.Unlock()
+
+	seed := *r.URL
+	header := r.Header.Clone()
+	done := s.d.Tracker.StartFinding(hint.TitleHint)
+	go func() {
+		defer done()
+		var n atomic.Int64 // found is called from parallel searches
+		s.finder.Discover(s.d.Context, &seed, header,
+			func(i int) bool { return s.d.Tracker.Has(tracker.KeyOf(parts.WithIndex(&seed, i))) },
+			func(f parts.Found) {
+				if s.d.Tracker.Found(f.URL, kind, hint.TitleHint, f.Index, f.Size) {
+					n.Add(1)
+				}
+			})
+		s.log.Info("finished looking for other parts", "title", hint.TitleHint, "found", n.Load())
+	}()
 }
 
 // serveLocal serves the request from the library when a complete copy

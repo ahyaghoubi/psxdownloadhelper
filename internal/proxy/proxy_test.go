@@ -61,7 +61,17 @@ type harness struct {
 
 func newHarness(t *testing.T, sonyBody []byte) *harness {
 	t.Helper()
+	return newHarnessWith(t, sonyBody, nil, true)
+}
+
+// newHarnessWith lets a test supply its own CDN handler and enable the
+// background part search.
+func newHarnessWith(t *testing.T, sonyBody []byte, cdn http.Handler, disableFind bool) *harness {
+	t.Helper()
 	h := &harness{libDir: t.TempDir(), sony: newFakeSony(t, sonyBody), track: tracker.New()}
+	if cdn != nil {
+		h.sony.Config.Handler = cdn
+	}
 	rules, err := match.LoadDefaults(true, true)
 	if err != nil {
 		t.Fatal(err)
@@ -79,7 +89,8 @@ func newHarness(t *testing.T, sonyBody []byte) *harness {
 			h.dashHit.Add(1)
 			fmt.Fprint(w, "dashboard")
 		}),
-		UpstreamProxy: up,
+		UpstreamProxy:    up,
+		DisableFindParts: disableFind,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -316,5 +327,57 @@ func TestFullSize(t *testing.T) {
 		if got := fullSize(r); got != c.want {
 			t.Errorf("fullSize(%d,%q) = %d, want %d", c.code, c.cr, got, c.want)
 		}
+	}
+}
+
+func TestFindsOtherPartsInBackground(t *testing.T) {
+	var gotUA atomic.Value
+	cdn := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ua := r.UserAgent(); ua != "" {
+			gotUA.Store(ua)
+		}
+		for i := 0; i < 4; i++ {
+			if strings.HasSuffix(r.URL.Path, fmt.Sprintf("_%d.pkg", i)) {
+				http.ServeContent(w, r, "p.pkg", time.Time{}, bytes.NewReader(make([]byte, 100+i)))
+				return
+			}
+		}
+		http.NotFound(w, r)
+	})
+	h := newHarnessWith(t, nil, cdn, false)
+	seed := strings.Replace(pkgURL, "_0.pkg", "_2.pkg", 1)
+	req, _ := http.NewRequest(http.MethodGet, seed, nil)
+	req.Header.Set("User-Agent", "PS5-test")
+	req.Header.Set("Range", "bytes=0-0")
+	resp, err := h.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		items, _ := h.track.Snapshot()
+		if len(items) == 4 && len(h.track.Finding()) == 0 {
+			for _, it := range items {
+				if it.Size != int64(100+it.Part) || it.Title != "PPSA01234" {
+					t.Errorf("part %d: %+v", it.Part, it)
+				}
+				if it.Requested != (it.Part == 2) {
+					t.Errorf("part %d Requested=%v", it.Part, it.Requested)
+				}
+				if !strings.HasSuffix(it.URL, "?token=x") {
+					t.Errorf("part %d lost its query string: %s", it.Part, it.URL)
+				}
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("found %d items, finding=%v", len(items), h.track.Finding())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if gotUA.Load() != "PS5-test" {
+		t.Errorf("part search should reuse the console's User-Agent, got %v", gotUA.Load())
 	}
 }

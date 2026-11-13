@@ -4,9 +4,14 @@
 package tracker
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -24,6 +29,9 @@ type Item struct {
 	Part      int    // _N.pkg index, -1 when absent
 	FirstSeen time.Time
 	LastSeen  time.Time
+	// Requested is true once the console itself asked for this file. Parts
+	// psxdh found on its own start false.
+	Requested bool
 
 	Size        int64 // full size reported by Sony, 0 when unknown
 	FromSony    int64 // bytes the console pulled from Sony through psxdh
@@ -43,12 +51,14 @@ type Tracker struct {
 	mu      sync.Mutex
 	items   map[string]*Item
 	console Console
+	finding map[string]int // title -> part searches in progress
+	version uint64         // bumped on every change worth saving
 	now     func() time.Time
 }
 
 // New returns an empty Tracker.
 func New() *Tracker {
-	return &Tracker{items: make(map[string]*Item), now: time.Now}
+	return &Tracker{items: make(map[string]*Item), finding: make(map[string]int), now: time.Now}
 }
 
 // KeyOf returns the tracking key for u.
@@ -74,7 +84,64 @@ func (t *Tracker) Seen(u *url.URL, kind match.Kind, hint match.Hint) string {
 	}
 	it.URL = u.String()
 	it.LastSeen = now
+	it.Requested = true
+	t.version++
 	return key
+}
+
+// Found records a part psxdh discovered on its own. It does nothing if the
+// file is already known. It reports whether the item was added.
+func (t *Tracker) Found(u *url.URL, kind match.Kind, title string, part int, size int64) bool {
+	key := KeyOf(u)
+	now := t.now()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if _, ok := t.items[key]; ok {
+		return false
+	}
+	t.items[key] = &Item{
+		Key: key, URL: u.String(), Name: path.Base(u.Path), Kind: kind,
+		Title: title, Part: part, FirstSeen: now, LastSeen: now, Size: size,
+	}
+	t.version++
+	return true
+}
+
+// Has reports whether key is tracked.
+func (t *Tracker) Has(key string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	_, ok := t.items[key]
+	return ok
+}
+
+// StartFinding marks a part search for title as running; call the returned
+// function when it ends.
+func (t *Tracker) StartFinding(title string) (done func()) {
+	t.mu.Lock()
+	t.finding[title]++
+	t.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			t.mu.Lock()
+			defer t.mu.Unlock()
+			if t.finding[title]--; t.finding[title] <= 0 {
+				delete(t.finding, title)
+			}
+		})
+	}
+}
+
+// Finding reports the titles with a part search running.
+func (t *Tracker) Finding() map[string]bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make(map[string]bool, len(t.finding))
+	for k := range t.finding {
+		out[k] = true
+	}
+	return out
 }
 
 // SetSize records the full size of a file as reported by Sony.
@@ -84,8 +151,9 @@ func (t *Tracker) SetSize(key string, size int64) {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if it, ok := t.items[key]; ok {
+	if it, ok := t.items[key]; ok && it.Size != size {
 		it.Size = size
+		t.version++
 	}
 }
 
@@ -106,6 +174,7 @@ func (t *Tracker) AddFromSony(key string, n int64) {
 	if it, ok := t.items[key]; ok {
 		it.FromSony += n
 		it.FromSonyAt = t.now()
+		t.version++
 	}
 }
 
@@ -116,6 +185,7 @@ func (t *Tracker) AddFromLibrary(key string, n int64) {
 	if it, ok := t.items[key]; ok {
 		it.FromLibrary += n
 		it.FromLibAt = t.now()
+		t.version++
 	}
 }
 
@@ -135,6 +205,66 @@ func (t *Tracker) Clear() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.items = make(map[string]*Item)
+	t.version++
+}
+
+// Version changes whenever there is something new to save.
+func (t *Tracker) Version() uint64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.version
+}
+
+type savedState struct {
+	Items []Item `json:"items"`
+}
+
+// Save writes the captured files to path, so links survive a restart of
+// psxdh. The write is atomic.
+func (t *Tracker) Save(path string) error {
+	t.mu.Lock()
+	st := savedState{Items: make([]Item, 0, len(t.items))}
+	for _, it := range t.items {
+		st.Items = append(st.Items, *it)
+	}
+	t.mu.Unlock()
+	data, err := json.MarshalIndent(st, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// Load restores files saved by Save. A missing file is not an error.
+func (t *Tracker) Load(path string) error {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var st savedState
+	if err := json.Unmarshal(data, &st); err != nil {
+		return fmt.Errorf("read saved links %s: %w", path, err)
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for i := range st.Items {
+		it := st.Items[i]
+		if it.Key == "" {
+			continue
+		}
+		t.items[it.Key] = &it
+	}
+	return nil
 }
 
 // Snapshot returns copies of all items plus the console status. Titles the

@@ -189,6 +189,9 @@ svg.i { width: 18px; height: 18px; flex: none; }
 .bar.b-sending > i, .bar.b-sent > i { background: var(--live); }
 .bar.b-from-sony > i { background: var(--warn); }
 .bar.b-ready > i { background: var(--ok); }
+.finding { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--info); font-weight: 600; }
+.finding::before { content: ""; width: 12px; height: 12px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 .empty { text-align: center; padding: 28px 12px 20px; }
 .empty svg { width: 40px; height: 40px; color: var(--muted); margin-bottom: 8px; }
 .empty p + p { margin-top: 4px; }
@@ -454,10 +457,12 @@ function renderNotices() {
   const ready = all.filter((f) => f.status === "ready");
   const sending = all.some((f) => f.status === "sending");
   const writing = all.some((f) => f.status === "downloading");
-  if (fromSony.length) out.push(notice("warn", "alert", "<b>Your console is downloading straight from Sony.</b> That's the slow route. Pause the download on the console, then download the file on your PC."));
+  if (fromSony.length) out.push(notice("warn", "alert", "<b>Your console is downloading straight from Sony.</b> That's the slow route. Pause the download on the console and download the files on your PC instead."));
   if (wrong.length) out.push(notice("bad", "alert", "<b>" + wrong.length + " file" + (wrong.length > 1 ? "s don't" : " doesn't") + " match Sony's size.</b> Delete " + (wrong.length > 1 ? "them" : "it") + " from the library folder and download again. psxdh won't send a wrong-sized file to the console."));
-  if (!fromSony.length && needed.length) out.push(notice("info", "info", "<b>Next:</b> press <b>Copy links</b>, paste them into your download manager, and save into the library folder."));
-  if (ready.length && !needed.length && !writing && !sending) out.push(notice("ok", "check", "<b>All files are ready.</b> Resume the download on your console. It will install from your PC."));
+  const searching = state.titles.some((t) => t.finding);
+  if (searching) out.push(notice("info", "info", "<b>Finding every part of the game…</b> psxdh is asking Sony which parts exist, so you can download them all now. This takes a few seconds."));
+  else if (!fromSony.length && needed.length) out.push(notice("info", "info", "<b>Next:</b> press <b>Copy links</b>, paste them into your download manager, and save into the library folder. You can switch the console off meanwhile: psxdh remembers the links, even after a restart."));
+  if (ready.length && !needed.length && !writing && !sending && !searching) out.push(notice("ok", "check", "<b>All files are ready.</b> Turn the console on, make sure its proxy points at this PC, and resume the download. It will install from your PC."));
   const key = out.map((n) => n.textContent).join("|");
   if (box.dataset.key !== key) { box.dataset.key = key; box.replaceChildren(...out); }
 }
@@ -510,7 +515,9 @@ function renderTitles() {
     lastStructure = structure;
     box.replaceChildren(...state.titles.map((t) => {
       const card = el("div", { class: "title-card", "data-title": t.id });
-      card.append(el("div", { class: "title-head" }, el("h3", { text: t.id }), el("span", { class: "muted", "data-f": "count", style: "font-size:13px" })));
+      card.append(el("div", { class: "title-head" }, el("h3", { text: t.id }),
+        el("span", { class: "finding", "data-f": "finding", text: "Finding all parts…" }),
+        el("span", { class: "muted", "data-f": "count", style: "font-size:13px" })));
       t.files.forEach((f) => card.append(buildRow(f)));
       return card;
     }));
@@ -521,6 +528,7 @@ function renderTitles() {
     const total = t.files.reduce((a, f) => a + (f.size || 0), 0);
     const ready = t.files.filter((f) => ["ready", "sending", "sent"].includes(f.status)).length;
     setText(card.querySelector('[data-f="count"]'), ready + " of " + t.files.length + " on PC" + (total ? " · " + fmtBytes(total) : ""));
+    card.querySelector('[data-f="finding"]').hidden = !t.finding;
     t.files.forEach((f) => {
       const row = card.querySelector('[data-key="' + CSS.escape(f.key) + '"]');
       if (row) updateRow(row, f);
