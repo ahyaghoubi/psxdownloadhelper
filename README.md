@@ -107,6 +107,15 @@ go build ./cmd/psxdh
 The end-to-end tests in [cmd/psxdh/e2e_test.go](cmd/psxdh/e2e_test.go) build
 the binary, run it, and play console, Sony CDN and FDM against it.
 
+### Releasing
+
+Either run **Actions › Release › Run workflow** on `main` and enter a version
+(for example `v0.2.0`), or push a tag yourself:
+`git tag v0.2.0 && git push origin v0.2.0`. The tests run on macOS, Linux and
+Windows first; if they pass, GoReleaser publishes binaries for all six
+OS/architecture pairs with checksums. Versions with a suffix (`v0.2.0-rc.1`)
+are published as pre-releases.
+
 Design: [docs/architecture.md](docs/architecture.md) ·
 URL patterns: [docs/cdn-patterns.md](docs/cdn-patterns.md) ·
 Plans: [docs/roadmap.md](docs/roadmap.md) ·

@@ -1,4 +1,4 @@
-# GoReleaser config for psxdh. See docs/roadmap.md (Phase 3).
+# GoReleaser config for psxdh. Run by .github/workflows/release.yml.
 # Local snapshot:  goreleaser release --snapshot --clean
 version: 2
 
@@ -25,6 +25,10 @@ archives:
     formats: [binary]
     name_template: >-
       {{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}{{ if eq .Os "windows" }}.exe{{ end }}
+
+release:
+  # v1.2.3-rc.1 and similar are published as pre-releases.
+  prerelease: auto
 
 checksum:
   name_template: "checksums.txt"
