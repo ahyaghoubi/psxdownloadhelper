@@ -13,6 +13,7 @@ package proxy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -120,10 +121,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if key != "" {
 		s.userAgent.Store(r.UserAgent())
 		// Only look for the other parts when the console has to go to
-		// Sony (if this part is on the PC, the user has the links) and the
-		// package doesn't look like an update. Updates fetch scattered
-		// pieces of a big package; downloading all of it would be wasteful.
-		if pkg := s.d.Tracker.NoteRequest(key, start); !pkg.ConsoleDownloads() {
+		// Sony (if this part is on the PC, the user has the links), and
+		// not for packages the user marked as updates.
+		if !s.d.Tracker.PackageOf(key).ConsoleDownloads() {
 			s.findParts(r.URL, r.Header, kind, hint)
 		}
 	}
@@ -137,7 +137,8 @@ func (s *Server) findParts(u *url.URL, header http.Header, kind match.Kind, hint
 	if s.d.DisableFindParts || !match.IsPackage(kind) || parts.Index(u) < 0 {
 		return
 	}
-	series := parts.SeriesKey(u)
+	// Keyed by list generation too, so after Clear the next request searches again.
+	series := fmt.Sprintf("%d/%s", s.d.Tracker.Generation(), parts.SeriesKey(u))
 	s.mu.Lock()
 	if s.searched[series] {
 		s.mu.Unlock()
@@ -148,14 +149,14 @@ func (s *Server) findParts(u *url.URL, header http.Header, kind match.Kind, hint
 
 	seed := *u
 	header = header.Clone()
-	done := s.d.Tracker.StartFinding(hint.TitleHint)
+	gen, done := s.d.Tracker.StartFinding(hint.TitleHint)
 	go func() {
 		defer done()
 		var n atomic.Int64 // found is called from parallel searches
 		s.finder.Discover(s.d.Context, &seed, header,
 			func(i int) bool { return s.d.Tracker.Has(tracker.KeyOf(parts.WithIndex(&seed, i))) },
 			func(f parts.Found) {
-				if s.d.Tracker.Found(f.URL, kind, hint.TitleHint, f.Index, f.Size) {
+				if s.d.Tracker.Found(gen, f.URL, kind, hint.TitleHint, f.Index, f.Size) {
 					n.Add(1)
 				}
 			})

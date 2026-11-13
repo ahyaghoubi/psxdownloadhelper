@@ -108,10 +108,9 @@ type Title struct {
 	ID      string `json:"id"`      // title ID such as PPSA01547
 	Package string `json:"package"` // package name shared by its files
 	Finding bool   `json:"finding"` // still looking for more parts on Sony
-	// Update is true when the console should fetch this package itself:
-	// psxdh saw it fetch scattered pieces (Detected) or the user chose so.
+	// Update is true when the user marked this package as an update for
+	// the console to fetch itself.
 	Update    bool   `json:"update"`
-	Detected  bool   `json:"detected"`
 	Mode      string `json:"mode"`
 	SonyBytes int64  `json:"sonyBytes"` // what the console has fetched from Sony
 	Files     []File `json:"files"`
@@ -189,7 +188,7 @@ func (h *Handler) Build() State {
 			byPackage[it.Package] = i
 			st.Titles = append(st.Titles, Title{
 				ID: id, Package: it.Package, Finding: finding[it.Title] && !p.ConsoleDownloads(),
-				Update: p.ConsoleDownloads(), Detected: p.Sparse, Mode: p.Mode,
+				Update: p.ConsoleDownloads(), Mode: p.Mode,
 			})
 		}
 		st.Titles[i].SonyBytes += it.FromSony

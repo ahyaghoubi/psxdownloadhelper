@@ -382,32 +382,71 @@ func TestFindsOtherPartsInBackground(t *testing.T) {
 	}
 }
 
-func TestUpdateRequestDoesNotSearchForParts(t *testing.T) {
+// A PS5 starts a game by reading the tail of its last part. That must be
+// treated as a game: every part is found.
+func TestTailReadOfLastPartIsAGame(t *testing.T) {
+	cdn := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for i := 0; i <= 3; i++ {
+			if strings.HasSuffix(r.URL.Path, fmt.Sprintf("_%d.pkg", i)) {
+				w.Header().Set("Content-Range", "bytes 0-0/4000000000")
+				if r.Header.Get("Range") != "bytes=0-0" {
+					w.Header().Set("Content-Range", "bytes 3900000000-3900000099/4000000000")
+				}
+				w.WriteHeader(http.StatusPartialContent)
+				_, _ = w.Write([]byte{0})
+				return
+			}
+		}
+		http.NotFound(w, r)
+	})
+	h := newHarnessWith(t, nil, cdn, false)
+	last := strings.Replace(pkgURL, "_0.pkg", "_3.pkg", 1)
+	h.get(t, last, "bytes=3900000000-3900000099")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		items, _ := h.track.Snapshot()
+		if len(items) == 4 && len(h.track.Finding()) == 0 {
+			if h.track.PackageOf(items[0].Key).ConsoleDownloads() {
+				t.Fatal("a game must not be treated as an update")
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("found %d parts", len(items))
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestMarkedUpdateDoesNotSearchForParts(t *testing.T) {
 	var probes atomic.Int64
-	// An 80 GB update package: answer any range with 100 bytes.
 	cdn := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(r.URL.Path, "_3.pkg") {
 			probes.Add(1)
 		}
-		w.Header().Set("Content-Range", "bytes 50000000000-50000000099/80000000000")
+		w.Header().Set("Content-Range", "bytes 100-199/80000000000")
 		w.WriteHeader(http.StatusPartialContent)
 		_, _ = w.Write(make([]byte, 100))
 	})
-	h := newHarnessWith(t, nil, cdn, false)
+	h := newHarnessWith(t, nil, cdn, true) // no search on the first request
 	upd := strings.Replace(pkgURL, "_0.pkg", "_3.pkg", 1)
-	resp, body := h.get(t, upd, "bytes=50000000000-50000000099")
-	if resp.StatusCode != http.StatusPartialContent || len(body) != 100 {
-		t.Fatalf("forward: %d %d", resp.StatusCode, len(body))
-	}
+	h.get(t, upd, "bytes=100-199")
+	items, _ := h.track.Snapshot()
+	h.track.SetMode(items[0].Package, tracker.ModeConsole)
+
+	// Same package, now marked as an update, with search enabled.
+	rules, _ := match.LoadDefaults(true, true)
+	up, _ := url.Parse(h.sony.URL)
+	p, _ := New(Deps{Rules: rules, Library: h.lib, Tracker: h.track, Dashboard: http.NotFoundHandler(), UpstreamProxy: up})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, upd, nil)
+	req.Header.Set("Range", "bytes=100-199")
+	p.ServeHTTP(rec, req)
 	time.Sleep(300 * time.Millisecond)
 	if n := probes.Load(); n != 0 {
-		t.Fatalf("part search ran for an update (%d probes)", n)
+		t.Fatalf("part search ran for a package marked as an update (%d probes)", n)
 	}
-	items, _ := h.track.Snapshot()
-	if len(items) != 1 || !h.track.PackageOf(items[0].Key).ConsoleDownloads() {
-		t.Fatalf("package should be marked as an update: %+v", items)
-	}
-	if items[0].SonyReach != 50000000100 {
+	if items, _ := h.track.Snapshot(); items[0].SonyReach != 200 {
 		t.Errorf("SonyReach = %d", items[0].SonyReach)
 	}
 }

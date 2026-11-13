@@ -190,6 +190,7 @@ svg.i { width: 18px; height: 18px; flex: none; }
 .bar.b-from-sony > i { background: var(--warn); }
 .bar.b-ready > i { background: var(--ok); }
 .chip { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--live-soft); color: var(--live); }
+button.ghost.danger { color: var(--bad); background: var(--bad-soft); }
 button.small { font-size: 13px; padding: 4px 10px; min-height: 30px; }
 .update-body { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; font-size: 14px; }
 .update-body svg { color: var(--live); margin-top: 2px; }
@@ -302,7 +303,7 @@ footer code { font-family: var(--mono); overflow-wrap: anywhere; }
       <h2 id="dl-h">Downloads</h2>
       <button class="primary" id="copy-needed" hidden><svg class="i"><use href="#i-copy"/></svg><span>Copy links</span></button>
       <a class="btn" id="save-txt" hidden href="/api/urls.txt?need=1&amp;download=1" download><svg class="i"><use href="#i-down"/></svg>Save .txt</a>
-      <button class="ghost" id="clear" hidden title="Forget the captured links"><svg class="i"><use href="#i-trash"/></svg>Clear</button>
+      <button class="ghost" id="clear" hidden title="Forget the captured links (files on your PC stay)"><svg class="i"><use href="#i-trash"/></svg><span>Clear</span></button>
     </div>
     <div class="path" id="save-into" hidden><span class="muted" style="font-size:13px;white-space:nowrap">Save into</span><code id="libdir2"></code><button class="icon ghost" data-copy-el="libdir2" aria-label="Copy folder path" title="Copy folder path"><svg class="i"><use href="#i-copy"/></svg></button></div>
     <div id="titles"></div>
@@ -527,7 +528,7 @@ async function setMode(pkg, mode) {
 }
 function modeButton(t) {
   const toConsole = !t.update;
-  const b = el("button", { class: "ghost small", title: toConsole ? "Updates only need a few pieces of a big package. Let the console fetch them itself." : "Download every part of this package on the PC" },
+  const b = el("button", { class: "ghost small", title: toConsole ? "For updates: the console fetches only the pieces it needs, which is faster than downloading the whole package" : "Download every part of this package on the PC" },
     el("span", { text: toConsole ? "It's an update" : "Download on PC instead" }));
   b.addEventListener("click", () => setMode(t.package, toConsole ? "console" : "pc"));
   return b;
@@ -542,7 +543,7 @@ function buildCard(t) {
   if (t.update) {
     card.append(el("div", { class: "update-body" }, icon("info"),
       el("div", {},
-        el("b", { text: "Your console downloads this update itself." }),
+        el("b", { text: "Marked as an update: your console downloads it itself." }),
         el("span", { class: "muted", "data-f": "update-sub" }))));
   } else {
     t.files.forEach((f) => card.append(buildRow(f)));
@@ -565,7 +566,7 @@ function renderTitles() {
     if (t.update) {
       setText(card.querySelector('[data-f="count"]'), total ? "package " + fmtBytes(total) : "");
       setText(card.querySelector('[data-f="update-sub"]'),
-        "It only needs a few pieces of this " + (total ? fmtBytes(total) + " " : "") + "package, so downloading it on the PC would waste time. Leave the console connected until it finishes." +
+        "Updates usually need only a few pieces of this " + (total ? fmtBytes(total) + " " : "") + "package, so downloading all of it on the PC would waste time. Leave the console connected until it finishes." +
         (t.sonyBytes ? " Downloaded so far: " + fmtBytes(t.sonyBytes) + "." : ""));
       return;
     }
@@ -600,13 +601,20 @@ function renderLibrary() {
     el("span", { class: "badge " + (f.state === "ready" ? "s-ready" : "s-downloading"), text: f.state === "ready" ? "Complete" : "Still writing" }))));
 }
 
+// Each section renders on its own, so a problem in one can't freeze the page.
+function render() {
+  for (const fn of [renderHeader, renderSteps, renderNotices, renderTitles, renderLibrary]) {
+    try { fn(); } catch (e) { console.error("psxdh: " + fn.name + " failed", e); }
+  }
+}
+
 async function refresh() {
   try {
     const r = await fetch("/api/state", { cache: "no-store" });
     if (!r.ok) throw new Error(r.status);
     state = await r.json();
     $("offline").hidden = true;
-    renderHeader(); renderSteps(); renderNotices(); renderTitles(); renderLibrary();
+    render();
   } catch {
     $("offline").hidden = false;
   }
@@ -624,10 +632,28 @@ $("copy-needed").addEventListener("click", async () => {
   const urls = files().filter(needsDownload).map((f) => f.url);
   if (urls.length) await copy(urls.join("\n"), urls.length + " link" + (urls.length > 1 ? "s" : "") + " copied. Paste them into your download manager");
 });
+// Clear asks for a second click instead of a browser dialog (dialogs block
+// the page and are easy to dismiss by accident).
+let clearArmed = null;
 $("clear").addEventListener("click", async () => {
-  if (!confirm("Forget all captured links? Files in your library folder are not touched.")) return;
-  await fetch("/api/clear", { method: "POST" });
-  lastStructure = ""; refresh();
+  const btn = $("clear"), label = btn.querySelector("span");
+  if (!clearArmed) {
+    setText(label, "Click again to clear");
+    btn.classList.add("danger");
+    clearArmed = setTimeout(() => { clearArmed = null; setText(label, "Clear"); btn.classList.remove("danger"); }, 4000);
+    return;
+  }
+  clearTimeout(clearArmed); clearArmed = null;
+  setText(label, "Clear"); btn.classList.remove("danger");
+  try {
+    const r = await fetch("/api/clear", { method: "POST" });
+    if (!r.ok) throw new Error(r.status);
+    // Show the empty list straight away rather than waiting for the next poll.
+    if (state) { state.titles = []; state.counts = {}; }
+    lastStructure = null; render();
+    toast("Links cleared. Files in your library folder were not touched.");
+  } catch { toast("Couldn't clear. Is psxdh running?"); }
+  refresh();
 });
 loop();
 </script>

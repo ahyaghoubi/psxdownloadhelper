@@ -22,30 +22,23 @@ import (
 	"github.com/ahyaghoubi/psxdownloadhelper/internal/parts"
 )
 
-// sparseGap is how far past what the console already has a request must
-// start to count as a jump. Updates jump around inside a big package to
-// fetch only the changed pieces; a game download moves forward.
-const sparseGap = 32 << 20
-
 // Who downloads a package.
 const (
-	ModeAuto    = ""        // decide from what the console does
+	ModeAuto    = ""        // default: treated as a game, downloaded on the PC
 	ModePC      = "pc"      // download on the PC (games)
 	ModeConsole = "console" // let the console fetch it from Sony (updates)
 )
 
 // Package is what psxdh knows about one package (all parts of a game or
-// update).
+// update). psxdh can't tell a game from an update by watching the console
+// (a PS5 reads around inside game packages too), so the user marks updates.
 type Package struct {
-	Mode   string `json:"mode,omitempty"`
-	Sparse bool   `json:"sparse,omitempty"` // console fetched scattered pieces: looks like an update
+	Mode string `json:"mode,omitempty"`
 }
 
 // ConsoleDownloads reports whether the console should fetch this package
 // itself rather than the user downloading it on the PC.
-func (p Package) ConsoleDownloads() bool {
-	return p.Mode == ModeConsole || (p.Mode == ModeAuto && p.Sparse)
-}
+func (p Package) ConsoleDownloads() bool { return p.Mode == ModeConsole }
 
 // Item is one captured CDN file.
 type Item struct {
@@ -83,6 +76,7 @@ type Tracker struct {
 	packages map[string]*Package
 	console  Console
 	finding  map[string]int // title -> part searches in progress
+	gen      uint64         // bumped by Clear; results of older searches are dropped
 	version  uint64         // bumped on every change worth saving
 	now      func() time.Time
 }
@@ -126,13 +120,26 @@ func (t *Tracker) Seen(u *url.URL, kind match.Kind, hint match.Hint) string {
 	return key
 }
 
+// Generation identifies the current list. A part search records it when it
+// starts and passes it to Found, so results that arrive after Clear are
+// dropped instead of refilling the list.
+func (t *Tracker) Generation() uint64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.gen
+}
+
 // Found records a part psxdh discovered on its own. It does nothing if the
-// file is already known. It reports whether the item was added.
-func (t *Tracker) Found(u *url.URL, kind match.Kind, title string, part int, size int64) bool {
+// file is already known or the list was cleared since generation gen. It
+// reports whether the item was added.
+func (t *Tracker) Found(gen uint64, u *url.URL, kind match.Kind, title string, part int, size int64) bool {
 	key := KeyOf(u)
 	now := t.now()
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if gen != t.gen {
+		return false
+	}
 	if _, ok := t.items[key]; ok {
 		return false
 	}
@@ -152,17 +159,21 @@ func (t *Tracker) Has(key string) bool {
 	return ok
 }
 
-// StartFinding marks a part search for title as running; call the returned
-// function when it ends.
-func (t *Tracker) StartFinding(title string) (done func()) {
+// StartFinding marks a part search for title as running and returns the
+// list generation it belongs to; call done when it ends.
+func (t *Tracker) StartFinding(title string) (gen uint64, done func()) {
 	t.mu.Lock()
 	t.finding[title]++
+	gen = t.gen
 	t.mu.Unlock()
 	var once sync.Once
-	return func() {
+	return gen, func() {
 		once.Do(func() {
 			t.mu.Lock()
 			defer t.mu.Unlock()
+			if gen != t.gen {
+				return // cleared meanwhile: the finding map was reset
+			}
 			if t.finding[title]--; t.finding[title] <= 0 {
 				delete(t.finding, title)
 			}
@@ -217,25 +228,6 @@ func (t *Tracker) AddFromSony(key string, n, end int64) {
 		}
 		t.version++
 	}
-}
-
-// NoteRequest records that the console asked Sony for key starting at byte
-// start. A start well past what the console already has means it is
-// fetching scattered pieces, as it does for updates; the package is then
-// marked sparse. It returns the package's state after the request.
-func (t *Tracker) NoteRequest(key string, start int64) Package {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	it, ok := t.items[key]
-	if !ok {
-		return Package{}
-	}
-	p := t.pkg(it.Package)
-	if start > it.SonyReach+sparseGap && !p.Sparse {
-		p.Sparse = true
-		t.version++
-	}
-	return *p
 }
 
 // PackageOf returns the state of the package key belongs to.
@@ -319,6 +311,8 @@ func (t *Tracker) Clear() {
 	defer t.mu.Unlock()
 	t.items = make(map[string]*Item)
 	t.packages = make(map[string]*Package)
+	t.finding = make(map[string]int)
+	t.gen++
 	t.version++
 }
 

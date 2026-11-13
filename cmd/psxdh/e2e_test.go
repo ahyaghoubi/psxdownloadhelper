@@ -605,37 +605,41 @@ func TestConsoleOffWorkflow(t *testing.T) {
 	}
 }
 
-// TestUpdateIsLeftToTheConsole: for an update the console fetches scattered
-// pieces of a big package. psxdh must not ask the user to download the whole
-// package, unless the user says so.
-func TestUpdateIsLeftToTheConsole(t *testing.T) {
-	sony := newGameCDN(t, 48<<20, 3) // 3 parts of ~48 MB
+// TestGameVsUpdate: a PS5 starts a game by reading the tail of its last
+// part. That must be treated as a game with every part listed. When the user
+// marks a package as an update, its links are withdrawn and no more parts are
+// searched for.
+func TestGameVsUpdate(t *testing.T) {
+	sony := newGameCDN(t, 4<<20, 3) // 3 parts of ~4 MB
 	in := start(t, sony.URL)
-	upd := strings.Replace(gameURL, "_0.pkg", "_1.pkg", 1)
+	last := strings.Replace(gameURL, "_0.pkg", "_2.pkg", 1)
 
-	// The console jumps 40 MB into part 1: it only wants a piece.
-	r, body := in.consoleGet(t, upd, "bytes=41943040-41943139")
-	if r.StatusCode != 206 || !bytes.Equal(body, sony.partBody(1)[41943040:41943140]) {
+	// Like the PS5 with GTA: read 100 bytes near the end of the last part.
+	end := len(sony.partBody(2))
+	r, _ := in.consoleGet(t, last, fmt.Sprintf("bytes=%d-%d", end-100, end-1))
+	if r.StatusCode != 206 {
 		t.Fatalf("forward: %d", r.StatusCode)
 	}
-	time.Sleep(500 * time.Millisecond)
-	if hits := sony.hits.Load(); hits != 1 {
-		t.Fatalf("psxdh probed Sony %d times for an update", hits-1)
+	urlsNeeded := func() int {
+		resp, _ := http.Get(in.base() + "/api/urls.txt?need=1")
+		txt, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return len(strings.Fields(string(txt)))
 	}
-	st := in.state(t)
-	if len(st.Titles) != 1 || !st.Titles[0].Update {
-		t.Fatalf("expected an update card: %+v", st.Titles)
+	deadline := time.Now().Add(10 * time.Second)
+	for urlsNeeded() != 3 {
+		if time.Now().After(deadline) {
+			t.Fatalf("a game read from its tail should list all 3 parts: %+v", in.state(t).Titles)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
-	resp, _ := http.Get(in.base() + "/api/urls.txt?need=1")
-	txt, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if len(bytes.TrimSpace(txt)) != 0 {
-		t.Fatalf("no links should be offered for an update: %q", txt)
+	if st := in.state(t); st.Titles[0].Update {
+		t.Fatal("must start as a game")
 	}
 
-	// The user disagrees: download it on the PC. All parts are found.
+	// The user marks it as an update.
 	resp, err := http.Post(in.base()+"/api/mode", "application/json",
-		strings.NewReader(`{"package":"EP0000-PPSA01234_00-GAME000000000000","mode":"pc"}`))
+		strings.NewReader(`{"package":"EP0000-PPSA01234_00-GAME000000000000","mode":"console"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -643,17 +647,46 @@ func TestUpdateIsLeftToTheConsole(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("mode: %d", resp.StatusCode)
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		resp, _ := http.Get(in.base() + "/api/urls.txt?need=1")
-		txt, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if len(strings.Fields(string(txt))) == 3 {
-			break
+	if st := in.state(t); !st.Titles[0].Update {
+		t.Fatal("update card expected")
+	}
+	if n := urlsNeeded(); n != 0 {
+		t.Fatalf("an update must not offer links, got %d", n)
+	}
+
+	// Back to a game.
+	resp, _ = http.Post(in.base()+"/api/mode", "application/json",
+		strings.NewReader(`{"package":"EP0000-PPSA01234_00-GAME000000000000","mode":"pc"}`))
+	resp.Body.Close()
+	if n := urlsNeeded(); n != 3 {
+		t.Fatalf("links should be back, got %d", n)
+	}
+}
+
+// TestClearWhileSearching: pressing Clear while psxdh is still asking Sony
+// about parts must leave the list empty.
+func TestClearWhileSearching(t *testing.T) {
+	slow := newGameCDN(t, 4096, 40)
+	inner := slow.Config.Handler
+	slow.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(100 * time.Millisecond) // a slow connection to Sony
+		inner.ServeHTTP(w, r)
+	})
+	in := start(t, slow.URL)
+	in.consoleGet(t, gameURL, "bytes=0-0")
+	time.Sleep(300 * time.Millisecond) // search under way
+
+	resp, err := http.Post(in.base()+"/api/clear", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	time.Sleep(2 * time.Second) // let the old search keep answering
+	if st := in.state(t); len(st.Titles) != 0 {
+		n := 0
+		for _, ti := range st.Titles {
+			n += len(ti.Files)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("parts not offered after choosing PC: %q", txt)
-		}
-		time.Sleep(100 * time.Millisecond)
+		t.Fatalf("Clear did not stick: %d files came back", n)
 	}
 }

@@ -66,13 +66,20 @@ requested part is already on the PC.
 ## Games vs updates
 
 Every file belongs to a package (its name without the part number, `_sc`
-or `-DP`). When the console asks Sony for a byte range starting more than
-32 MB past what it already has of that file, the package is marked as an
-update: the console is fetching scattered pieces of a large package, so
-downloading the whole package on the PC would waste time. Updates get no part
-search and are left out of the links to copy. The user can override it
-either way from the dashboard (`POST /api/mode`); the choice is saved with
-the links.
+or `-DP`). Packages start as games: all parts are found and offered for
+download. The user can mark a package as an update (`POST /api/mode`), which
+withdraws its links and stops part searches; the console then fetches only
+the pieces it needs. The choice is saved with the links.
+
+psxdh doesn't guess. An earlier build marked a package as an update when the
+console jumped far into a file, but a PS5 starts a game by reading the tail
+of its last part, so real games were misdetected.
+
+## Clear and running searches
+
+The tracker has a generation number that Clear increments. A part search
+records the generation when it starts, and its results are dropped if the
+list was cleared meanwhile, so Clear can't be undone by a slow search.
 
 ## Why polling instead of fsnotify
 

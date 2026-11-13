@@ -209,10 +209,13 @@ func readBody(t *testing.T, resp *http.Response) string {
 func TestUpdatesAreLeftToTheConsole(t *testing.T) {
 	f := newFixture(t)
 	f.track.SetSize(f.key, 80<<30)
-	f.track.NoteRequest(f.key, 40<<30) // console jumps into the middle: an update
+	if st := f.h.Build(); st.Titles[0].Update {
+		t.Fatal("packages start as games")
+	}
+	f.track.SetMode("EP0000-PPSA01234_00-GAME", tracker.ModeConsole) // user: "It's an update"
 
 	st := f.h.Build()
-	if len(st.Titles) != 1 || !st.Titles[0].Update || !st.Titles[0].Detected {
+	if len(st.Titles) != 1 || !st.Titles[0].Update {
 		t.Fatalf("expected an update card: %+v", st.Titles)
 	}
 	if s := st.Titles[0].Files[0].Status; s != StatusConsole {

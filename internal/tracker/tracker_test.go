@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"net/url"
+	"os"
 	"testing"
 	"time"
 
@@ -73,10 +74,10 @@ func TestSaveAndLoad(t *testing.T) {
 	k := seen(a, "http://h/x_0.pkg?tok=1", "PPSA00001", 0)
 	a.SetSize(k, 4000)
 	u, _ := url.Parse("http://h/x_1.pkg?tok=1")
-	if !a.Found(u, match.KindPKGApp, "PPSA00001", 1, 3000) {
+	if !a.Found(a.Generation(), u, match.KindPKGApp, "PPSA00001", 1, 3000) {
 		t.Fatal("Found should add a new part")
 	}
-	if a.Found(u, match.KindPKGApp, "PPSA00001", 1, 3000) {
+	if a.Found(a.Generation(), u, match.KindPKGApp, "PPSA00001", 1, 3000) {
 		t.Fatal("Found must not add a duplicate")
 	}
 	if err := a.Save(path); err != nil {
@@ -98,7 +99,7 @@ func TestSaveAndLoad(t *testing.T) {
 
 func TestFindingStatus(t *testing.T) {
 	tr := New()
-	done := tr.StartFinding("PPSA00001")
+	_, done := tr.StartFinding("PPSA00001")
 	if !tr.Finding()["PPSA00001"] {
 		t.Fatal("search should be reported as running")
 	}
@@ -109,48 +110,33 @@ func TestFindingStatus(t *testing.T) {
 	}
 }
 
-func TestUpdateDetection(t *testing.T) {
+func TestModes(t *testing.T) {
 	tr := New()
 	k := seen(tr, "http://h/EP1-PPSA00001_00-GAME_0.pkg", "PPSA00001", 0)
-
-	// A game download moves forward from the start.
-	if p := tr.NoteRequest(k, 0); p.ConsoleDownloads() {
-		t.Fatal("request from byte 0 is not an update")
-	}
-	tr.AddFromSony(k, 10<<20, 10<<20)
-	if p := tr.NoteRequest(k, 10<<20); p.ConsoleDownloads() {
-		t.Fatal("continuing where it left off is not an update")
-	}
-	if p := tr.NoteRequest(k, 30<<20); p.ConsoleDownloads() {
-		t.Fatal("a small skip is not an update")
-	}
-
-	// An update jumps far into the package.
 	k2 := seen(tr, "http://h/EP1-PPSA00001_00-PATCH_3.pkg", "PPSA00001", 3)
-	if p := tr.NoteRequest(k2, 2<<30); !p.ConsoleDownloads() || !p.Sparse {
-		t.Fatalf("jump into the middle should mark an update: %+v", p)
-	}
-	// Other files of the same package share the decision.
 	k3 := seen(tr, "http://h/EP1-PPSA00001_00-PATCH_4.pkg", "PPSA00001", 4)
-	if !tr.PackageOf(k3).ConsoleDownloads() {
-		t.Fatal("parts of the same package must share the update decision")
+
+	// Everything starts as a game, however the console reads it.
+	tr.AddFromSony(k, 2<<20, 3<<30) // a PS5 reads the tail of a game's last part first
+	if tr.PackageOf(k).ConsoleDownloads() || tr.PackageOf(k2).ConsoleDownloads() {
+		t.Fatal("packages must default to download on PC")
+	}
+
+	// The user marks the patch as an update: all its parts follow.
+	if !tr.SetMode("EP1-PPSA00001_00-PATCH", ModeConsole) {
+		t.Fatal("SetMode")
+	}
+	if !tr.PackageOf(k2).ConsoleDownloads() || !tr.PackageOf(k3).ConsoleDownloads() {
+		t.Fatal("parts of the same package must share the mode")
 	}
 	if tr.PackageOf(k).ConsoleDownloads() {
 		t.Fatal("the base game must not be affected")
-	}
-
-	// The user can override, and back.
-	if !tr.SetMode("EP1-PPSA00001_00-PATCH", ModePC) || tr.PackageOf(k2).ConsoleDownloads() {
-		t.Fatal("ModePC must override detection")
-	}
-	if !tr.SetMode("EP1-PPSA00001_00-GAME", ModeConsole) || !tr.PackageOf(k).ConsoleDownloads() {
-		t.Fatal("ModeConsole must apply")
 	}
 	if tr.SetMode("nope", ModePC) {
 		t.Fatal("unknown package")
 	}
 
-	// Decisions survive a restart.
+	// The choice survives a restart.
 	path := t.TempDir() + "/links.json"
 	if err := tr.Save(path); err != nil {
 		t.Fatal(err)
@@ -159,7 +145,51 @@ func TestUpdateDetection(t *testing.T) {
 	if err := tr2.Load(path); err != nil {
 		t.Fatal(err)
 	}
-	if !tr2.PackageOf(k).ConsoleDownloads() || tr2.PackageOf(k2).ConsoleDownloads() {
+	if !tr2.PackageOf(k2).ConsoleDownloads() || tr2.PackageOf(k).ConsoleDownloads() {
 		t.Fatal("modes lost on restart")
+	}
+}
+
+// links.json files written by the build with automatic detection carry a
+// "sparse" flag. It must be ignored, so wrongly detected games come back.
+func TestOldSparseFlagIgnored(t *testing.T) {
+	path := t.TempDir() + "/links.json"
+	old := `{"items":[{"Key":"h/EP1-PPSA00001_00-GTA_51.pkg","URL":"http://h/EP1-PPSA00001_00-GTA_51.pkg","Name":"EP1-PPSA00001_00-GTA_51.pkg","Kind":"pkg-app","Package":"EP1-PPSA00001_00-GTA","Part":51,"Requested":true}],
+"packages":{"EP1-PPSA00001_00-GTA":{"sparse":true}}}`
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tr := New()
+	if err := tr.Load(path); err != nil {
+		t.Fatal(err)
+	}
+	if tr.PackageOf("h/EP1-PPSA00001_00-GTA_51.pkg").ConsoleDownloads() {
+		t.Fatal("old automatic 'update' guess must not survive")
+	}
+}
+
+func TestClearDropsLateSearchResults(t *testing.T) {
+	tr := New()
+	seen(tr, "http://h/G_0.pkg", "PPSA00001", 0)
+	gen, done := tr.StartFinding("PPSA00001")
+	tr.Clear() // user presses Clear while the search is still running
+	u, _ := url.Parse("http://h/G_1.pkg")
+	if tr.Found(gen, u, match.KindPKGApp, "PPSA00001", 1, 10) {
+		t.Fatal("a search started before Clear must not refill the list")
+	}
+	if items, _ := tr.Snapshot(); len(items) != 0 {
+		t.Fatalf("list refilled: %+v", items)
+	}
+	if len(tr.Finding()) != 0 {
+		t.Fatal("Clear should drop the searching indicator")
+	}
+	done()
+	_, done2 := tr.StartFinding("PPSA00001")
+	if !tr.Finding()["PPSA00001"] {
+		t.Fatal("a new search after Clear should show")
+	}
+	done2()
+	if !tr.Found(tr.Generation(), u, match.KindPKGApp, "PPSA00001", 1, 10) {
+		t.Fatal("a search started after Clear should add parts")
 	}
 }
