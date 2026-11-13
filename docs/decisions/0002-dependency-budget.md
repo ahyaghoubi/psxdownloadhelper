@@ -1,6 +1,6 @@
 # ADR 0002: Dependency budget
 
-- Status: Accepted
+- Status: Accepted; amended by [ADR 0006](0006-simplify-to-core.md) (only `gopkg.in/yaml.v3` remains)
 - Date: 30/05/2026
 - Deciders: project owner
 - Supersedes: —

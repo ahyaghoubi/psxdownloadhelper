@@ -3,8 +3,6 @@ package match
 import (
 	"embed"
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
 
 	"gopkg.in/yaml.v3"
@@ -29,26 +27,6 @@ func LoadDefaults(enablePS4, enablePS5 bool) (*RuleSet, error) {
 	}
 	if enablePS5 {
 		if err := rs.appendFromFS(defaultRulesFS, "rules/ps5.yaml"); err != nil {
-			return nil, err
-		}
-	}
-	return rs, nil
-}
-
-// LoadOverride loads all *.yaml files from dir, replacing any default rules.
-// The directory is scanned in lexical order so filenames control rule priority.
-func LoadOverride(dir string) (*RuleSet, error) {
-	rs := &RuleSet{}
-	matches, err := filepath.Glob(filepath.Join(dir, "*.yaml"))
-	if err != nil {
-		return nil, fmt.Errorf("scan rules dir %q: %w", dir, err)
-	}
-	for _, m := range matches {
-		data, err := os.ReadFile(m)
-		if err != nil {
-			return nil, fmt.Errorf("read %q: %w", m, err)
-		}
-		if err := rs.appendBytes(m, data); err != nil {
 			return nil, err
 		}
 	}

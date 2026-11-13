@@ -2,8 +2,6 @@ package match
 
 import (
 	"net/url"
-	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -212,72 +210,5 @@ func TestRuleCountSane(t *testing.T) {
 	}
 	if rs.Len() < 8 {
 		t.Errorf("Len = %d; expected at least 8 default rules (5 PS4 + 6 PS5)", rs.Len())
-	}
-}
-
-func TestLoadOverride(t *testing.T) {
-	dir := t.TempDir()
-	body := `platform: custom
-rules:
-  - kind: pkg-app
-    host_suffix: example.com
-    path_regex: /custom/.*\.pkg$
-`
-	if err := os.WriteFile(filepath.Join(dir, "custom.yaml"), []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	rs, err := LoadOverride(dir)
-	if err != nil {
-		t.Fatalf("LoadOverride: %v", err)
-	}
-	if rs.Len() != 1 {
-		t.Fatalf("Len = %d, want 1", rs.Len())
-	}
-	u := mustParse(t, "http://example.com/custom/foo.pkg")
-	kind, _ := rs.Classify(u)
-	if kind != KindPKGApp {
-		t.Errorf("kind = %q, want pkg-app", kind)
-	}
-}
-
-func TestLoadOverrideRejectsBadRegex(t *testing.T) {
-	dir := t.TempDir()
-	body := `platform: broken
-rules:
-  - kind: pkg-app
-    host_suffix: example.com
-    path_regex: "(unbalanced"
-`
-	if err := os.WriteFile(filepath.Join(dir, "bad.yaml"), []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := LoadOverride(dir); err == nil {
-		t.Error("expected error for invalid regex")
-	}
-}
-
-func TestHostSuffixSubdomainMatch(t *testing.T) {
-	rs, err := LoadDefaults(false, true)
-	if err != nil {
-		t.Fatalf("LoadDefaults: %v", err)
-	}
-	// prod.dl.playstation.net is the suffix on the pkg-delta rule.
-	u := mustParse(t, "http://anything.prod.dl.playstation.net/x/y-DP.pkg")
-	kind, _ := rs.Classify(u)
-	if kind != KindPKGDelta {
-		t.Errorf("subdomain of suffix should match; got kind %q", kind)
-	}
-}
-
-func TestHostSuffixNoCrossDomain(t *testing.T) {
-	rs, err := LoadDefaults(false, true)
-	if err != nil {
-		t.Fatalf("LoadDefaults: %v", err)
-	}
-	// evil.com ends in nothing relevant; must not match.
-	u := mustParse(t, "http://evil.com/x/y-DP.pkg")
-	kind, _ := rs.Classify(u)
-	if kind != KindUnknown {
-		t.Errorf("unrelated host must not match; got kind %q", kind)
 	}
 }

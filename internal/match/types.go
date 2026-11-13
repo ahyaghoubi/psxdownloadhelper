@@ -48,3 +48,15 @@ type Hint struct {
 	TitleHint string
 	PartIndex int
 }
+
+// IsPackage reports whether k is a PKG the user downloads with an external
+// downloader. Manifests and checksums are small; the console fetches those
+// itself.
+func IsPackage(k Kind) bool {
+	switch k {
+	case KindPKGBase, KindPKGPatch, KindPKGApp, KindPKGSC, KindPKGDelta:
+		return true
+	default:
+		return false
+	}
+}

@@ -26,7 +26,7 @@ linters:
         - (io.ReadCloser).Close
         - (net.Conn).Close
         - (*os.File).Close
-        # Writes to stdout / cobra's out writer: nothing actionable on error.
+        # Writes to stdout: nothing actionable on error.
         - fmt.Fprint
         - fmt.Fprintf
         - fmt.Fprintln

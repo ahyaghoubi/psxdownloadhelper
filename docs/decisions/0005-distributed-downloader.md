@@ -1,6 +1,6 @@
 # ADR 0005: Embedded downloader + master/slave distributed download
 
-- Status: Accepted
+- Status: Superseded by [ADR 0006](0006-simplify-to-core.md)
 - Date: 05/06/2026
 - Deciders: project owner
 - Supersedes: partially reverses the "no built-in downloader" non-goal in [roadmap.md](../roadmap.md)

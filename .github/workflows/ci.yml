@@ -31,9 +31,7 @@ jobs:
           git diff --exit-code -- go.mod go.sum
       - name: Vet
         run: go vet ./...
-      - name: Test (race)
-        # Sony CDN handshakes in the doctor tests aren't reachable from CI;
-        # the suite is written to tolerate that, but keep the timeout generous.
+      - name: Test (race, includes end-to-end tests of the built binary)
         run: go test -race -timeout 180s ./...
 
   lint:

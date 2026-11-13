@@ -1,532 +1,120 @@
-# psxdownloadhelper
+# psxdownloadhelper (psxdh)
 
-A cross-platform **Go** HTTP proxy for PlayStation owners. `psxdh` sits
-between a PS5 / PS4 and Sony's CDN, captures the official download URLs as
-the console requests them, hands those URLs to an external downloader
-(Free Download Manager, aria2, IDM, …) on a PC, watches a library folder
-for the downloaded files, and serves them back to the console over LAN with
-full HTTP `Range` support.
+Download PlayStation games and updates at full PC speed.
 
-It is a clean-room MIT reimplementation in the spirit of the original
+`psxdh` is a small proxy you run on your PC. Point your PS5 or PS4 at it,
+start a download on the console, and psxdh shows you the download links.
+Fetch them with **Free Download Manager** (or any downloader you like) into
+your library folder, resume on the console, and it installs straight from
+your PC over your home network.
+
+It's a clean-room MIT reimplementation in the spirit of
 [KOPElan/PSX-Download-Helper](https://github.com/KOPElan/PSX-Download-Helper),
-with **first-class PS5 support**. Users can still keep full control through
-external downloaders such as FDM, while the optional distributed cluster uses a
-managed `aria2c` downloader under the hood.
-
-> **Status: Phase 1 + 2.5 complete; Phase 2 + 3 largely landed.** The proxy,
-> library watcher, classifier, CLI, and the full network-resilience stack
-> (custom DNS, retry, upstream proxy chain, Range-aware partial cache, breaker,
-> bandwidth, JSONL persist, diagnostics) are wired up and tested. Now added:
-> **cross-run resumable downloads**, **integrity verification** (don't serve
-> a corrupt file), **DNS resolver health ranking**, an embedded **web
-> dashboard** + session tracker, **aria2** export + JSON-RPC push, **mDNS**
-> LAN announce, and release tooling (CI matrix, GoReleaser, golangci-lint).
-> Hardware validation against current PS5/PS4 firmware (Phase 0) is still
-> ahead. See [docs/roadmap.md](docs/roadmap.md) for the phase breakdown and
-> [docs/network-resilience.md](docs/network-resilience.md) for the resilience
-> knobs.
->
-> **Also now:** an **embedded aria2 downloader** and a **master/slave
-> distributed download cluster** that combines several machines' links for one
-> game, managed from the dashboard. See
-> [ADR 0005](docs/decisions/0005-distributed-downloader.md).
-
----
-
-## How it works
+with first-class PS5 support.
 
 ```
-PS5 / PS4   ───HTTP proxy───►   psxdh  ───forward (no local file)───►   Sony CDN
-                                  │                                       │
-                                  │◄──────── stream response bytes ───────┘
-                                  │
-                                  ├──► tee 200/206 bytes into .partial
-                                  │    (Range spans are written by offset)
-                                  ▼
-                          library folder
-                                  │
-                   complete cache / fsnotify "file stable"
-                                  ▼
-PS5 / PS4   ───retry with Range───►   psxdh ───serve from disk (206)───► console
+ console ──proxy──► psxdh ──────────────► Sony CDN        (file not on PC yet)
+                     │
+                     └── library folder ──► console        (file is on PC: served locally)
+                           ▲
+         FDM / aria2 / IDM ┘  (you download the links psxdh shows you)
 ```
 
-For the full design see [docs/architecture.md](docs/architecture.md). For
-the URL patterns the proxy classifies, see
-[docs/cdn-patterns.md](docs/cdn-patterns.md).
+psxdh never decrypts PSN traffic: HTTPS is passed through untouched. It does
+not download anything itself.
 
 ---
 
 ## Quick start
 
-### Install from GitHub Releases
+1. **Get psxdh.** Download the file for your system from
+   [Releases](https://github.com/ahyaghoubi/psxdownloadhelper/releases), or
+   build it: `go build ./cmd/psxdh`.
+2. **Run it.** Double-click it, or run `psxdh` in a terminal. The dashboard
+   opens in your browser and shows the address to use.
+   *macOS: the first time, right-click › Open to get past Gatekeeper.*
+3. **Point the console at it.** Set the console's proxy server to your PC's
+   address and port `8080`:
+   - **PS5:** Settings › Network › Settings › Set Up Internet Connection.
+     Highlight your network, press **Options**, choose Advanced Settings ›
+     Proxy Server › Use.
+   - **PS4:** Settings › Network › Set Up Internet Connection › Custom, keep
+     the defaults until Proxy Server › Use.
+4. **Start a download on the console.** Its files appear in the dashboard.
+5. **Pause it on the console**, press **Copy links** and paste them into
+   FDM. Save into the library folder shown in the dashboard
+   (`~/Downloads/psxdh` by default).
+6. **Resume on the console** once the dashboard says *Ready*. The console
+   installs from your PC.
 
-Download the binary for your OS/arch from
-[GitHub Releases](https://github.com/ahyaghoubi/psxdownloadhelper/releases)
-(e.g. `psxdh_0.1.0_darwin_arm64`, `psxdh_0.1.0_linux_amd64`,
-`psxdh_0.1.0_windows_amd64.exe`). No archive to extract.
+The dashboard walks you through these steps and shows where each file is:
 
-**Double-click to run:** launching the binary with no arguments starts
-`psxdh proxy` automatically (Windows opens a console window; the server runs
-until you close it or press Ctrl-C). From a terminal you can still use explicit
-subcommands (`psxdh version`, `psxdh doctor`, …).
+| Status | Meaning |
+| --- | --- |
+| Needs download | Not on your PC yet. Copy the link into your downloader. |
+| From Sony (slow) | The console is downloading it from Sony right now. Pause it. |
+| Downloading on PC | Your downloader is writing it into the library folder. |
+| Wrong size | The file on your PC doesn't match Sony's. Delete it and download again. |
+| Ready | On your PC. Resume the download on the console. |
+| Installing | The console is pulling it from your PC. |
+| Sent to console | Done. |
 
-```bash
-chmod +x psxdh_0.1.0_darwin_arm64   # macOS/Linux, if needed
-./psxdh_0.1.0_darwin_arm64          # same as: … proxy
+You can open the dashboard from your phone too: it's the same address and
+port as the proxy, for example `http://192.168.1.10:8080`.
+
+---
+
+## Options
+
+```
+psxdh [--listen 0.0.0.0:8080] [--library DIR] [--config FILE] [--log-level info] [--no-browser]
+psxdh version
 ```
 
-On macOS, the first launch from Downloads may require **right-click → Open**
-(Gatekeeper). For a smoother double-click experience, rename the file to
-`psxdh` and move it somewhere permanent (e.g. `~/Applications/`).
+Settings can also live in `~/.config/psxdh/config.yaml`. See
+[docs/configuration.md](docs/configuration.md). Config files from older
+releases still load; settings for removed features are ignored.
 
-Verify with `psxdh version` (should show the release tag, not `dev`). Optional:
-rename to `psxdh` and put it on your `PATH`.
+---
 
-### Build from source
+## Good to know
+
+- **Keep the original file names.** psxdh matches files by name. Files can be
+  in subfolders of the library folder.
+- **Unfinished downloads are never served.** Files ending in `.part`,
+  `.fdmdownload`, `.crdownload`, `.tmp`, `.download` or with an `.aria2`
+  control file beside them are treated as in progress, and a file is only
+  served once its size has stopped changing for 2 seconds.
+- **A file with the wrong size is never served.** When psxdh knows the real
+  size from Sony, a mismatched local copy is skipped and the console
+  downloads from Sony instead.
+- **Multi-part games:** the console asks for parts one at a time, so later
+  parts appear in the dashboard as the console reaches them.
+- **Firewall:** allow incoming connections to psxdh on your PC (Windows asks
+  the first time).
+- **Blocked CDN?** `network.upstream_proxy` sends psxdh's plain-HTTP
+  downloads through another proxy (http, https or socks5).
+
+---
+
+## Development
 
 ```bash
+go test -race ./...          # unit tests plus end-to-end tests of the real binary
 go build ./cmd/psxdh
 ```
 
-### Run
+The end-to-end tests in [cmd/psxdh/e2e_test.go](cmd/psxdh/e2e_test.go) build
+the binary, run it, and play console, Sony CDN and FDM against it.
 
-```bash
-# Zero-config: PS5 rules, dashboard, Iran-friendly DNS/retry,
-# fast stream-through forwarding. Proxy on 0.0.0.0:8080.
-./psxdh proxy
+Design: [docs/architecture.md](docs/architecture.md) ·
+URL patterns: [docs/cdn-patterns.md](docs/cdn-patterns.md) ·
+Plans: [docs/roadmap.md](docs/roadmap.md) ·
+Why it got smaller: [ADR 0006](docs/decisions/0006-simplify-to-core.md)
 
-# Or with overrides:
-./psxdh proxy --listen 0.0.0.0:8080 --library ~/Downloads/psxdh
+## Legal
 
-# Or with a config file (to enable cluster/cache, change DNS, etc.):
-./psxdh proxy --config config.yaml
-```
+For content you own on PSN. psxdh only fetches the official CDN files your
+console already asks for. No piracy, no licence bypass, no MITM.
 
-**Prerequisite (cluster / `psxdh node`):** install `aria2c` on your PATH before
-starting. The embedded cluster downloader requires it when cluster mode is enabled.
-
-| OS | Install |
-| --- | --- |
-| macOS | `brew install aria2` |
-| Debian/Ubuntu | `sudo apt install aria2` |
-| Windows | `winget install aria2.aria2` |
-
-Run `psxdh doctor` to verify DNS reachability. If you enable cluster mode, it
-also checks that `aria2c` is found. For local dev/CI only, set
-`downloader.allow_http_fallback: true` to use the built-in HTTP engine when
-aria2c is missing.
-
-The startup banner prints your LAN IP(s) and dashboard URL. When cluster mode is
-enabled, it also prints the cluster token.
-When your PC has more than one network interface (e.g. Wi‑Fi plus a direct
-Ethernet cable to the PS5), every address is listed — use the IP on the
-interface your console is plugged into:
-
-```
-psxdh dev
-  LAN IPs:
-    192.168.2.1    (en8)
-    192.168.1.42   (en0)
-  proxy listen:  0.0.0.0:8080
-  dashboard:     http://192.168.1.42:8081/?token=4f3c…
-  library dir:   /home/me/Downloads/psxdh
-  library layout: basename
-  match rules:   6
-
-Point your PS5 proxy at the IP on the interface it is connected to
-  (e.g. 192.168.2.1:8080 for a direct cable; 192.168.1.42:8080 on a shared router).
-Open the dashboard from your phone using any listed IP.
-Press Ctrl-C to shut down (graceful shutdown, up to 15s for in-flight work).
-```
-
-### Point your console at the proxy
-
-- **PS5:** Settings → Network → Settings → Set Up Internet Connection →
-  Advanced Settings → Proxy Server → Use → enter the PC's LAN IP and the
-  proxy port (default 8080).
-- **PS4:** Settings → Network → Set Up Internet Connection → Custom →
-  Proxy Server → Use → enter the PC's LAN IP and the proxy port.
-
-Use a wired LAN connection on both ends if possible — wireless will work but
-caps your local-serve throughput.
-
-### PS5 direct Ethernet (cable to PC)
-
-Use this when the PS5 is plugged straight into your PC with an Ethernet cable
-and the PC uses Wi‑Fi (or another adapter) for internet:
-
-```
-Internet ←── Wi‑Fi ←── PC ←── Ethernet cable ←── PS5
-```
-
-psxdh needs no special config (`proxy.listen: 0.0.0.0:8080` already listens on
-the cable). The OS must assign addresses and route traffic:
-
-1. **macOS:** System Settings → General → Sharing → **Internet Sharing** —
-   share **from Wi‑Fi** **to Ethernet**. The Mac is usually `192.168.2.1` on
-   that link; the PS5 gets an address via DHCP.
-2. **Windows:** Settings → Network → **Mobile hotspot** or Internet Connection
-   Sharing — share Wi‑Fi to the Ethernet adapter.
-3. **Run** `./psxdh proxy` and read the **LAN IPs** line in the banner or
-   dashboard header.
-4. **PS5 proxy:** Settings → Network → … → Proxy Server → Use → **Ethernet IP**
-   (e.g. `192.168.2.1:8080`), not the Wi‑Fi IP.
-5. **Firewall:** allow inbound TCP **8080** (proxy) and **8081** (dashboard).
-6. **Phone dashboard:** open the URL using the **Wi‑Fi** IP from the list.
-
-See also the dashboard header, which lists every interface IP and the proxy
-port.
-
-### Capture at home, download at work
-
-Capture URLs on your home network without downloading the full game, then
-resume on a work machine (optionally using the cluster to combine several PCs'
-bandwidth):
-
-**At home (capture only):**
-
-```yaml
-capture:
-  persist:
-    enabled: true
-    path: "~/psxdh/capture.jsonl"
-    fsync: true
-cluster:
-  enabled: false
-forward:
-  partial_cache:
-    enabled: false   # don't tee large PKGs to disk at home
-```
-
-1. Run `./psxdh proxy --config docs/examples/config.home.yaml` (or use the
-   dashboard Settings panel).
-2. Point the PS5 proxy at your home PC and start the download — psxdh records
-   CDN URLs to `capture.jsonl` without saving multi-gigabyte files locally.
-3. Copy `capture.jsonl` to your work machine (USB, cloud sync, etc.).
-
-**At work (cluster download):**
-
-```yaml
-jobs:
-  import_on_start: "~/psxdh/capture.jsonl"
-  import_enumerate: true
-  state_path: "~/psxdh/jobs/state.json"
-cluster:
-  enabled: true
-  role: master
-  master_as_node: true
-```
-
-1. Start the master: `./psxdh proxy --config docs/examples/config.work.yaml`
-   — it imports the capture file on startup and queues parts for download.
-2. Copy the master's printed `cluster` token into each slave's config, then
-   attach slaves: `./psxdh node --config config.work.yaml` on other work PCs.
-3. Or import later via the dashboard **Import capture** button, or:
-
-```bash
-psxdh import --from capture.jsonl --url http://192.168.1.10:8081 --token … --enumerate
-```
-
-**Offline export** (no running proxy):
-
-```bash
-psxdh export --from capture.jsonl --format aria2 --out game.aria2.txt --library-dir ~/Downloads/psxdh
-```
-
-Job state in `jobs.state_path` survives restarts — the Sessions panel shows
-progress even before the PS5 reconnects.
-
-Example profiles: [docs/examples/config.home.yaml](docs/examples/config.home.yaml),
-[docs/examples/config.work.yaml](docs/examples/config.work.yaml).
-
-### Use a downloader (FDM, aria2, …)
-
-1. Start a download on the console. The URL appears in the `psxdh` log.
-2. Copy the URL into FDM (or your downloader of choice).
-3. Save the file into your `library.dir` with its original filename. FDM's
-   default save layout works as-is.
-4. The library watcher will detect the file, wait for it to settle, and add
-   it to the index.
-5. Resume the download on the console. The proxy will now serve the file
-   locally with `206 Partial Content`.
-
----
-
-## Configuration
-
-`psxdh` is configured by `config.yaml` (see
-[docs/configuration.md](docs/configuration.md) for the full reference). With no
-config file, built-in defaults are tuned for **fast PS5 pass-through** on
-networks with unreliable DNS: dashboard on, Shecan-style DNS, DNS health ranking,
-retry, and integrity checks. Disk-heavy features such as partial cache and the
-embedded cluster downloader are opt-in. Override only what you need:
-
-```yaml
-# Headless maximum stream-through speed.
-admin:
-  enabled: false
-
-# PS4 titles alongside PS5:
-match:
-  ps4: true
-  ps5: true
-```
-
-CLI flags (`--listen`, `--library`, `--log-level`, `--config`) override the
-YAML file.
-
-If the log says `library hit` while your PS5 is resuming, psxdh is serving a
-file that already exists in `library.dir`. For stream-through only, remove any
-old/incomplete PKG from the library and keep `cluster.enabled: false`; otherwise
-the embedded aria2 cluster will intentionally download PKGs into the library.
-Files with an aria2 sidecar (`<pkg>.aria2`) are treated as in-progress and will
-not be served locally.
-
-For the absolute fastest pass-through from Sony's CDN to the console, keep
-`forward.partial_cache.enabled: false`. The partial cache is useful on unstable
-links because it writes resumable `.partial` files while forwarding, but that
-extra disk write can become the limiting factor on slow disks or busy systems.
-
----
-
-## Surviving unstable networks
-
-The built-in defaults already include Iran-friendly DNS, retry, DNS health
-ranking, and integrity verification. Verify resolvers after first start:
-
-```bash
-psxdh doctor                                    # all configured resolvers
-psxdh probe https://gst.prod.dl.playstation.net/.../x.pkg
-```
-
-`psxdh doctor` now shows the effective proxy DNS chain first (the same configured
-chain the proxy uses, including health ranking), followed by each individual
-resolver and an HTTP CDN reachability baseline that matches captured PKG URLs.
-
-If you use a local VPN, route only PSN CDN traffic through it (not enabled by
-default — your SOCKS5 port varies by app):
-
-```yaml
-network:
-  upstream_proxy:
-    enabled: true
-    url: "socks5://127.0.0.1:1080"
-    only_for_hosts:
-      - "prod.dl.playstation.net"
-      - "ww.prod.dl.playstation.net"
-```
-
-See [docs/network-resilience.md](docs/network-resilience.md) for the full knob
-reference and additional recipes.
-
----
-
-## Web dashboard (GUI)
-
-An embedded dashboard shows the live capture log, per-title session progress,
-library state, a connectivity panel (DNS health + CDN reachability), and a
-**Settings** panel for editing config without touching raw YAML. Settings
-are grouped by section (proxy, library, network, cluster, jobs, etc.) with a typed
-control and helper text for every field. Use **Save** on a section or **Save all**
-to write changes; restart `psxdh` to apply them. Without `--config`, saves go to
-`~/.config/psxdh/config.yaml` (created on first save; loaded automatically once
-it exists). The file is written with owner-only (`0600`) permissions because it
-can hold secrets (admin / cluster tokens, the aria2 RPC secret).
-
-The **Sessions** panel includes per-title **Export aria2** / **Export txt**
-buttons, header **Export all** actions, and **Import capture** to upload a
-home `capture.jsonl` into a running master.
-
-```yaml
-admin:
-  enabled: true
-  listen: "0.0.0.0:8081"   # LAN-reachable
-  # token: ""              # auto-generated and printed in the banner when empty
-```
-
-On startup the banner prints a ready-to-open URL with the token:
-
-```
-  dashboard:     http://192.168.1.42:8081/?token=4f3c…
-```
-
-Any non-loopback bind requires the token (sent via the `?token=` query or the
-`X-Psxdh-Token` header), so a casual device on the LAN can't drive your proxy.
-
-## aria2 handoff (best for throttled links)
-
-aria2's segmented, resumable downloads are ideal where bandwidth is throttled.
-Start `aria2c --enable-rpc`, then let psxdh push captured URLs straight in — no
-copy-paste:
-
-```yaml
-handoff:
-  aria2:
-    enabled: true
-    rpc_url: "http://127.0.0.1:6800/jsonrpc"
-    # rpc_secret: "…"      # matches aria2c --rpc-secret
-    auto_push: true        # queue every captured PKG automatically
-```
-
-The dashboard also has a per-part "→ aria2" button. Files land in `library.dir`
-with their original basename, so the watcher promotes them automatically. You
-can still export a plain list (`psxdh` emits aria2 input-file format) and run
-`aria2c -i list.txt` yourself.
-
----
-
-## CLI
-
-| Command | Purpose |
-| --- | --- |
-| `psxdh proxy` | Run the HTTP proxy + library watcher (+ dashboard / cluster master if enabled). |
-| `psxdh node` | Run as a cluster slave: embedded downloader + agent the master drives. |
-| `psxdh doctor` | Probe configured DNS resolvers and PSN CDN reachability. |
-| `psxdh probe <url>` | Classify + resolve + HEAD/GET a single URL. |
-| `psxdh export` | Export pushable URLs from a capture JSONL (aria2 or txt). |
-| `psxdh import` | POST a capture JSONL to a running master's import API. |
-| `psxdh version` | Print the build version. |
-| `psxdh --help` | List subcommands and flags. |
-
-The `doctor` and `probe` commands are the diagnostic surface for the
-network-resilience stack — see
-[docs/network-resilience.md](docs/network-resilience.md). Both are
-read-only and safe to run while the proxy is serving. Session tracking,
-URL export/import, and job persistence are available through the web dashboard
-and the `export` / `import` CLI commands.
-
----
-
-## Distributed download cluster (combine several machines' links)
-
-Where one link is slow, split a game's parts across several machines on the LAN
-so their bandwidth adds up. One **master** (the node the PS5 proxies through)
-enumerates the parts and farms them out to **slave** nodes; finished parts come
-back to the master, which serves them to the console. See
-[ADR 0005](docs/decisions/0005-distributed-downloader.md).
-
-This is opt-in so normal proxy mode keeps all bandwidth for the console. To add
-remote slaves, enable cluster on the master, keep it running, and start nodes on
-other machines:
-
-```yaml
-cluster:
-  enabled: true
-  role: master
-  master_as_node: true
-  bind: "0.0.0.0:8082"     # cluster/agent API (default)
-downloader:
-  engine: "aria2"            # requires aria2c on PATH (see prerequisite table)
-  # allow_http_fallback: true  # dev/CI only — skip aria2 requirement
-```
-
-On each slave machine:
-
-```bash
-# Put the master's printed cluster token in config.yaml first:
-# cluster:
-#   token: "<master-token>"
-psxdh node --master http://<master-ip>:8082 --bind 0.0.0.0:8082
-```
-
-Slave nodes refuse to start without `cluster.token`; use the token printed by
-the master banner so arbitrary LAN clients cannot drive a worker node.
-
-Slaves announce themselves via mDNS, so the master's dashboard can **discover**
-them, or you can **add one by IP**. The dashboard shows per-node progress and
-speed, the game's overall progress, and the **combined speed across all nodes**.
-You can also move a finished part to the master manually (USB/SSD) — drop it in
-the library folder and the master treats that part as done.
-
----
-
-## What `psxdh` does **not** do
-
-- It does **not** require an external downloader for the cluster: it embeds a
-  managed **aria2c** (ADR 0005). For non-cluster use you can still hand URLs to
-  FDM / aria2 / IDM / curl, or push to a running aria2 over RPC.
-- It does **not** MITM HTTPS. `CONNECT` is tunnelled as raw TCP. PSN
-  authentication, store browsing, and login traffic stay encrypted.
-- It is **not** a tool for piracy, licence bypass, or downloading content
-  you don't own. It is for **content you already own** on PSN — same intent
-  as the original PSX Download Helper.
-
-See [docs/research.md](docs/research.md) for the legal / licence posture
-and prior-art landscape.
-
----
-
-## Testing
-
-```bash
-go test ./...
-```
-
-The test suite covers:
-
-- `internal/match` — URL classification against PS4 + PS5 rule packs.
-- `internal/library` — index, watcher (partial-write debounce), resolver.
-- `internal/proxy` — absolute-URI forwarding, `Range` pass-through,
-  `CONNECT` tunnel against an `httptest.NewTLSServer`, `auto` / `cache` /
-  `strict` modes, hop-by-hop header stripping, capture publication,
-  forward retry, Range-aware partial cache promotion.
-- `internal/serve` — RFC 7233 Range cases.
-- `internal/netresolve` — DoH + UDP + cache + multi-resolver fallback.
-- `internal/retry`, `internal/circuit`, `internal/bandwidth`,
-  `internal/upstream` — the resilience layer.
-- `internal/persist`, `internal/verify`, `internal/doctor` — JSONL log,
-  CRC framework + watcher integrity gate, diagnostic checks.
-- `internal/proxy` (partial cache) — cross-run resume, Range span caching,
-  validator mismatch fallback, and the corrupt/wrong-size serve gate.
-- `internal/netresolve` — DoH + UDP + cache + multi-resolver fallback +
-  health ranking.
-- `internal/admin`, `internal/session`, `internal/handoff` — dashboard API
-  + token auth + SSE, session aggregation, aria2 JSON-RPC client.
-- `internal/export`, `internal/capture`, `internal/config`, `internal/mdns`
-  — unit tests.
-- `e2e/` — full forward → watcher → serve cycle against a fake Sony-CDN-
-  shaped upstream, including the multi-part FDM scenario.
-
-### Windows + Defender Application Control note
-
-On some Windows installs, Microsoft Defender Application Control will
-briefly block freshly-built test binaries that `go test` writes into
-obscured temp paths (`%LocalAppData%\Temp\go-buildXXXXX\...`). When that
-happens — typically for one or two specific packages, non-deterministic
-— rerun with the bundled wrapper:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/run-tests.ps1
-```
-
-It builds each test binary to `./.testbin/<pkg>.test.exe` and retries
-the launch up to 5 times with a short delay if Defender refuses the
-first attempt. The wrapper accepts the same package patterns as
-`go test`: `scripts/run-tests.ps1 ./internal/bandwidth/...`.
-
-See the testing strategy in
-[docs/architecture.md](docs/architecture.md#testing-strategy).
-
----
-
-## Documentation map
-
-| Document | What's in it |
-| --- | --- |
-| [docs/architecture.md](docs/architecture.md) | Repository layout, package responsibilities, request pipeline, session model, testing strategy. |
-| [docs/cdn-patterns.md](docs/cdn-patterns.md) | PS4 / PS5 CDN URL shapes and the rule packs that classify them. |
-| [docs/configuration.md](docs/configuration.md) | `config.yaml` reference + CLI flags + library layouts. |
-| [docs/network-resilience.md](docs/network-resilience.md) | DNS (+ health ranking) + retry + proxy-chain + partial cache (+ cross-run resume) + diagnostics. |
-| [docs/roadmap.md](docs/roadmap.md) | Vision, user flows, phases, risks, open questions, v1.0 definition of done. |
-| [docs/research.md](docs/research.md) | Prior-art tools, dependency budget, legal / licence notes, external references. |
-| [docs/decisions/](docs/decisions/) | Architecture Decision Records (0001 proxy stack, 0002 dep budget, 0003 network resilience, 0004 mDNS dependency, 0005 embedded downloader + cluster). |
-
----
-
-## Licence
-
-MIT. See [LICENSE](LICENSE).
-
-Not affiliated with Sony Interactive Entertainment. You are responsible for
-compliance with PSN Terms of Service and any local laws when using this
-tool.
+MIT licence.

@@ -1,6 +1,6 @@
 # ADR 0003: Network resilience stack
 
-- Status: Accepted
+- Status: Superseded by [ADR 0006](0006-simplify-to-core.md)
 - Date: 01/06/2026
 - Deciders: project owner
 - Supersedes: —

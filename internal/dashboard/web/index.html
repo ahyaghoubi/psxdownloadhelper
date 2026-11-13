@@ -1,0 +1,585 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>psxdh</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232f5bd3'/%3E%3Cpath d='M16 8v12m0 0-5-5m5 5 5-5M9 24h14' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #f4f5f8;
+  --surface: #ffffff;
+  --surface-2: #f0f2f6;
+  --border: #dde1e8;
+  --text: #161a22;
+  --muted: #5b6474;
+  --accent: #2f5bd3;
+  --accent-text: #ffffff;
+  --accent-soft: #e6ecfb;
+  --ok: #17794a;
+  --ok-soft: #e2f4ea;
+  --warn: #8a5a00;
+  --warn-soft: #fdf1d8;
+  --bad: #b42318;
+  --bad-soft: #fde7e5;
+  --info: #2f5bd3;
+  --info-soft: #e6ecfb;
+  --live: #6d3fc0;
+  --live-soft: #efe8fb;
+  --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .08);
+  --radius: 12px;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1218;
+    --surface: #171b23;
+    --surface-2: #1e232d;
+    --border: #2b313d;
+    --text: #e8ebf1;
+    --muted: #9aa3b2;
+    --accent: #7c9cff;
+    --accent-text: #0f1218;
+    --accent-soft: #1e2847;
+    --ok: #5fd39a;
+    --ok-soft: #13301f;
+    --warn: #f2c063;
+    --warn-soft: #33270f;
+    --bad: #ff8a80;
+    --bad-soft: #3a1714;
+    --info: #7c9cff;
+    --info-soft: #1e2847;
+    --live: #b99cff;
+    --live-soft: #2a1f45;
+    --shadow: none;
+  }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+.wrap { max-width: 920px; margin: 0 auto; padding: 20px 16px 48px; }
+header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; margin-right: auto; }
+.brand svg { flex: none; }
+.brand small { font-weight: 500; color: var(--muted); font-size: 13px; }
+h2 { font-size: 16px; margin: 0; }
+h3 { font-size: 15px; margin: 0; }
+p { margin: 0; }
+.muted { color: var(--muted); }
+.mono { font-family: var(--mono); font-size: 13px; }
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 18px;
+  margin-bottom: 16px;
+}
+.pill {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 6px 12px; border-radius: 999px; font-size: 13px; font-weight: 600;
+  background: var(--surface); border: 1px solid var(--border);
+}
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+.pill.on .dot { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
+.pill.wait .dot { background: var(--warn); animation: pulse 1.6s ease-in-out infinite; }
+.pill.off .dot { background: var(--bad); }
+@keyframes pulse { 50% { opacity: .35; } }
+
+/* Steps */
+.steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; list-style: none; padding: 0; margin: 0 0 16px; counter-reset: step; }
+.step {
+  position: relative; padding: 12px 12px 12px 44px; border-radius: 10px;
+  background: var(--surface); border: 1px solid var(--border); min-height: 64px;
+}
+.step::before {
+  counter-increment: step; content: counter(step);
+  position: absolute; left: 12px; top: 12px; width: 22px; height: 22px; border-radius: 50%;
+  display: grid; place-items: center; font-size: 12px; font-weight: 700;
+  background: var(--surface-2); color: var(--muted); border: 1px solid var(--border);
+}
+.step b { display: block; font-size: 13px; }
+.step span { display: block; font-size: 12px; color: var(--muted); line-height: 1.35; }
+.step.done::before { content: "✓"; background: var(--ok-soft); color: var(--ok); border-color: transparent; }
+.step.now { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.step.now::before { background: var(--accent); color: var(--accent-text); border-color: transparent; }
+
+/* Setup */
+.setup { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.addr-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 6px; }
+.field { display: grid; gap: 2px; padding: 10px 12px; border-radius: 10px; background: var(--surface-2); min-width: 120px; }
+.field small { font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.field output { font-family: var(--mono); font-size: 22px; font-weight: 700; letter-spacing: .01em; }
+ul.how { margin: 12px 0 0; padding-left: 18px; }
+ul.how li { margin: 4px 0; }
+.path {
+  display: flex; align-items: center; gap: 8px; margin-top: 10px;
+  padding: 8px 8px 8px 12px; border-radius: 10px; background: var(--surface-2);
+}
+.path code { font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; flex: 1; }
+details.setup-toggle > summary { cursor: pointer; font-weight: 600; list-style: none; display: flex; align-items: center; gap: 8px; }
+details.setup-toggle > summary::-webkit-details-marker { display: none; }
+details.setup-toggle > summary::after { content: "Show"; margin-left: auto; color: var(--accent); font-size: 13px; }
+details.setup-toggle[open] > summary::after { content: "Hide"; }
+details.setup-toggle[open] > summary { margin-bottom: 14px; }
+
+/* Buttons */
+button, .btn {
+  font: inherit; font-size: 14px; font-weight: 600; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px; justify-content: center;
+  border-radius: 8px; padding: 8px 14px; min-height: 36px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text); text-decoration: none;
+}
+button:hover, .btn:hover { background: var(--surface-2); }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+button.primary:hover { filter: brightness(1.08); background: var(--accent); }
+button.ghost { border-color: transparent; background: transparent; color: var(--muted); }
+button.ghost:hover { color: var(--text); background: var(--surface-2); }
+button.icon { padding: 6px; min-width: 34px; min-height: 34px; }
+button:disabled { opacity: .5; cursor: default; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+svg.i { width: 18px; height: 18px; flex: none; }
+
+/* Notices */
+.notice { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border-radius: 10px; margin-bottom: 16px; font-size: 14px; }
+.notice svg { margin-top: 1px; }
+.notice.warn { background: var(--warn-soft); color: var(--warn); }
+.notice.ok { background: var(--ok-soft); color: var(--ok); }
+.notice.bad { background: var(--bad-soft); color: var(--bad); }
+.notice.info { background: var(--info-soft); color: var(--info); }
+.notice b { color: inherit; }
+
+/* Downloads */
+.toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+#save-into { margin: 10px 0 2px; }
+.toolbar h2 { margin-right: auto; }
+.title-card { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin-top: 12px; }
+.title-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--surface-2); flex-wrap: wrap; }
+.title-head h3 { font-family: var(--mono); font-size: 14px; margin-right: auto; }
+.row {
+  display: grid; grid-template-columns: minmax(0, 1fr) 168px 40px; gap: 12px; align-items: center;
+  padding: 12px 14px; border-top: 1px solid var(--border);
+}
+.row:first-of-type { border-top: 0; }
+.name { min-width: 0; }
+.name b { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.name .sub { font-size: 12.5px; color: var(--muted); }
+.bar { height: 6px; border-radius: 99px; background: var(--surface-2); overflow: hidden; margin-top: 8px; }
+.bar > i { display: block; height: 100%; width: 0; border-radius: 99px; background: var(--accent); transition: width .6s ease; }
+.badge {
+  justify-self: start; display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12.5px; font-weight: 700; padding: 4px 10px; border-radius: 999px; white-space: nowrap;
+}
+.badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.s-needed { background: var(--warn-soft); color: var(--warn); }
+.s-from-sony { background: var(--warn-soft); color: var(--warn); }
+.s-downloading { background: var(--info-soft); color: var(--info); }
+.s-wrong-size { background: var(--bad-soft); color: var(--bad); }
+.s-ready { background: var(--ok-soft); color: var(--ok); }
+.s-sending { background: var(--live-soft); color: var(--live); }
+.s-sent { background: var(--surface-2); color: var(--muted); }
+.bar.b-downloading > i { background: var(--info); }
+.bar.b-sending > i, .bar.b-sent > i { background: var(--live); }
+.bar.b-from-sony > i { background: var(--warn); }
+.bar.b-ready > i { background: var(--ok); }
+.empty { text-align: center; padding: 28px 12px 20px; }
+.empty svg { width: 40px; height: 40px; color: var(--muted); margin-bottom: 8px; }
+.empty p + p { margin-top: 4px; }
+
+/* Library */
+.lib { list-style: none; margin: 10px 0 0; padding: 0; }
+.lib li { display: flex; gap: 12px; align-items: center; padding: 8px 0; border-top: 1px solid var(--border); font-size: 14px; }
+.lib li:first-child { border-top: 0; }
+.lib .mono { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+footer { color: var(--muted); font-size: 12.5px; text-align: center; margin-top: 24px; }
+footer code { font-family: var(--mono); overflow-wrap: anywhere; }
+
+.toast {
+  position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 20px); opacity: 0;
+  background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px; font-weight: 600; font-size: 14px;
+  transition: opacity .2s, transform .2s; pointer-events: none; max-width: calc(100% - 32px);
+}
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+@media (max-width: 760px) {
+  .steps { grid-template-columns: 1fr 1fr; }
+  .setup { grid-template-columns: 1fr; }
+}
+@media (max-width: 520px) {
+  .wrap { padding-top: 14px; }
+  .steps { gap: 6px; }
+  .step { min-height: 0; padding: 10px 10px 10px 40px; }
+  .step span { display: none; }
+  .path { flex-wrap: wrap; }
+  #save-into > span { flex-basis: 100%; }
+  .name b { white-space: normal; overflow-wrap: anywhere; }
+  .row { grid-template-columns: minmax(0, 1fr) 40px; }
+  .row .badge { grid-column: 1; grid-row: 2; }
+  .row button.icon { grid-row: 1 / span 2; grid-column: 2; }
+  .field output { font-size: 19px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 19h14"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6m4-6v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4m0 3.5v.01M10.3 4.2 2.6 17.5A2 2 0 0 0 4.3 20.5h15.4a2 2 0 0 0 1.7-3L13.7 4.2a2 2 0 0 0-3.4 0Z"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5m0-8.5v.01"/></symbol>
+  <symbol id="i-box" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8 12 3 3 8m18 0v8l-9 5m9-13-9 5m0 8-9-5V8m9 13v-8M3 8l9 5"/></symbol>
+</svg>
+
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <svg width="30" height="30" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--accent)"/><path d="M16 8v12m0 0-5-5m5 5 5-5M9 24h14" stroke="var(--accent-text)" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>psxdh <small>PlayStation download helper</small></span>
+    </div>
+    <div id="console" class="pill wait" role="status" aria-live="polite"><span class="dot"></span><span id="console-text">Starting…</span></div>
+  </header>
+
+  <div id="offline" class="notice bad" hidden>
+    <svg class="i"><use href="#i-alert"/></svg>
+    <div><b>psxdh isn't responding.</b> Check that it's still running on your PC. This page reconnects automatically.</div>
+  </div>
+
+  <ol class="steps" id="steps" aria-label="Progress">
+    <li class="step" data-step="1"><b>Connect console</b><span>Set its proxy to this PC</span></li>
+    <li class="step" data-step="2"><b>Start the download</b><span>On the console, as usual</span></li>
+    <li class="step" data-step="3"><b>Download on PC</b><span>Copy the links into FDM</span></li>
+    <li class="step" data-step="4"><b>Resume on console</b><span>It installs from your PC</span></li>
+  </ol>
+
+  <section class="card" aria-labelledby="setup-h">
+    <details class="setup-toggle" id="setup" open>
+      <summary><h2 id="setup-h">Console setup</h2></summary>
+      <div class="setup">
+        <div>
+          <p>Set your console's proxy server to:</p>
+          <div class="addr-row" id="addrs"></div>
+          <p class="muted" id="addr-hint" style="font-size:13px"></p>
+          <ul class="how">
+            <li><b>PS5:</b> Settings › Network › Settings › Set Up Internet Connection. Highlight your network, press <kbd>Options</kbd>, choose <i>Advanced Settings</i> › <i>Proxy Server</i> › <i>Use</i>.</li>
+            <li><b>PS4:</b> Settings › Network › Set Up Internet Connection › <i>Custom</i>. Keep the defaults until <i>Proxy Server</i> › <i>Use</i>.</li>
+          </ul>
+        </div>
+        <div>
+          <p>Have your download manager save files into this folder:</p>
+          <div class="path"><code id="libdir">…</code><button class="icon ghost" data-copy-el="libdir" aria-label="Copy folder path" title="Copy folder path"><svg class="i"><use href="#i-copy"/></svg></button></div>
+          <p class="muted" style="font-size:13px;margin-top:10px">Keep the original file names. psxdh picks files up automatically, including from subfolders.</p>
+        </div>
+      </div>
+    </details>
+  </section>
+
+  <div id="notices"></div>
+
+  <section class="card" aria-labelledby="dl-h">
+    <div class="toolbar">
+      <h2 id="dl-h">Downloads</h2>
+      <button class="primary" id="copy-needed" hidden><svg class="i"><use href="#i-copy"/></svg><span>Copy links</span></button>
+      <a class="btn" id="save-txt" hidden href="/api/urls.txt?need=1&amp;download=1" download><svg class="i"><use href="#i-down"/></svg>Save .txt</a>
+      <button class="ghost" id="clear" hidden title="Forget the captured links"><svg class="i"><use href="#i-trash"/></svg>Clear</button>
+    </div>
+    <div class="path" id="save-into" hidden><span class="muted" style="font-size:13px;white-space:nowrap">Save into</span><code id="libdir2"></code><button class="icon ghost" data-copy-el="libdir2" aria-label="Copy folder path" title="Copy folder path"><svg class="i"><use href="#i-copy"/></svg></button></div>
+    <div id="titles"></div>
+    <div class="empty" id="empty">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-box"/></svg>
+      <p><b>No downloads yet</b></p>
+      <p class="muted">Start a game or update download on your console. Its files will appear here.</p>
+    </div>
+  </section>
+
+  <section class="card" aria-labelledby="lib-h">
+    <details id="lib-details">
+      <summary style="cursor:pointer"><h2 id="lib-h" style="display:inline">Library folder</h2> <span class="muted" id="lib-count"></span></summary>
+      <ul class="lib" id="lib"></ul>
+    </details>
+  </section>
+
+  <footer>
+    <p>psxdh <span id="version"></span> · settings file <code id="cfg"></code></p>
+  </footer>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const LABEL = {
+  "needed": "Needs download",
+  "from-sony": "From Sony (slow)",
+  "downloading": "Downloading on PC",
+  "wrong-size": "Wrong size",
+  "ready": "Ready",
+  "sending": "Installing",
+  "sent": "Sent to console",
+};
+const KIND = {
+  "pkg-base": "Base game", "pkg-patch": "Update", "pkg-app": "Game package",
+  "pkg-sc": "Info package", "pkg-delta": "Delta update",
+};
+let state = null;
+let setupTouched = false;
+let lastStructure = "";
+
+function fmtBytes(n) {
+  if (!n) return "0 B";
+  const u = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i >= 3 ? n.toFixed(2) : i ? n.toFixed(1) : n.toFixed(0)) + " " + u[i];
+}
+function el(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") e.className = v; else if (k === "text") e.textContent = v; else e.setAttribute(k, v);
+  }
+  for (const k of kids) if (k != null) e.append(k);
+  return e;
+}
+function icon(name) {
+  const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  s.setAttribute("class", "i"); s.setAttribute("aria-hidden", "true");
+  const u = document.createElementNS("http://www.w3.org/2000/svg", "use");
+  u.setAttribute("href", "#i-" + name); s.append(u);
+  return s;
+}
+function setText(node, text) { if (node && node.textContent !== text) node.textContent = text; }
+
+let toastTimer;
+function toast(msg) {
+  const t = $("toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), 2200);
+}
+async function copy(text, msg) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(text);
+    else {
+      // Opened via a LAN IP (not https or localhost): the async clipboard API
+      // is unavailable, so fall back to a hidden textarea.
+      const ta = el("textarea", { readonly: "", style: "position:fixed;opacity:0;top:0;left:0" });
+      ta.value = text; document.body.append(ta); ta.select();
+      const ok = document.execCommand("copy"); ta.remove();
+      if (!ok) throw new Error("copy failed");
+    }
+    toast(msg || "Copied");
+    return true;
+  } catch {
+    window.prompt("Copy this:", text);
+    return false;
+  }
+}
+function flashCopied(btn) {
+  const use = btn.querySelector("use"); if (!use) return;
+  use.setAttribute("href", "#i-check");
+  setTimeout(() => use.setAttribute("href", "#i-copy"), 1400);
+}
+
+function files() { return state ? state.titles.flatMap((t) => t.files) : []; }
+const needsDownload = (f) => f.status === "needed" || f.status === "from-sony" || f.status === "wrong-size";
+
+function renderHeader() {
+  const c = state.console, pill = $("console");
+  if (c.connected) {
+    pill.className = "pill on";
+    setText($("console-text"), "Console connected · " + c.addr);
+  } else if (c.addr) {
+    pill.className = "pill off";
+    setText($("console-text"), "Console last seen " + Math.round(c.agoSec / 60) + " min ago");
+  } else {
+    pill.className = "pill wait";
+    setText($("console-text"), "Waiting for console");
+  }
+  setText($("libdir"), state.libraryDir);
+  setText($("libdir2"), state.libraryDir);
+  setText($("version"), state.version);
+  setText($("cfg"), state.configPath || "not used");
+
+  const addrs = state.addresses.length ? state.addresses : [{ ip: "this PC's IP", interface: "" }];
+  const key = addrs.map((a) => a.ip).join(",") + ":" + state.port;
+  const box = $("addrs");
+  if (box.dataset.key !== key) {
+    box.dataset.key = key; box.replaceChildren();
+    addrs.forEach((a, i) => {
+      if (i > 0) box.append(el("span", { class: "muted", style: "align-self:center", text: "or" }));
+      box.append(el("div", { class: "field" }, el("small", { text: "Address" + (a.interface ? " · " + a.interface : "") }), el("output", { text: a.ip })));
+    });
+    box.append(el("div", { class: "field" }, el("small", { text: "Port" }), el("output", { text: state.port })));
+    setText($("addr-hint"), addrs.length > 1 ? "Your PC has more than one network. Use the address on the same network as the console." : "");
+  }
+  // Collapse setup once the console is talking to us, unless the user opened it.
+  if (!setupTouched) $("setup").open = !(c.connected || state.titles.length);
+}
+
+function renderSteps() {
+  const all = files();
+  const done = [
+    state.console.connected || all.length > 0,
+    all.length > 0,
+    all.length > 0 && all.every((f) => ["ready", "sending", "sent"].includes(f.status)),
+    all.length > 0 && all.every((f) => f.status === "sent"),
+  ];
+  const current = done.indexOf(false);
+  document.querySelectorAll(".step").forEach((s, i) => {
+    s.classList.toggle("done", done[i]);
+    s.classList.toggle("now", i === current);
+    if (i === current) s.setAttribute("aria-current", "step"); else s.removeAttribute("aria-current");
+  });
+}
+
+function notice(kind, iconName, html) {
+  const n = el("div", { class: "notice " + kind }, icon(iconName));
+  const d = el("div"); d.innerHTML = html; n.append(d);
+  return n;
+}
+function renderNotices() {
+  const all = files(), box = $("notices"), out = [];
+  const fromSony = all.filter((f) => f.status === "from-sony");
+  const wrong = all.filter((f) => f.status === "wrong-size");
+  const needed = all.filter(needsDownload);
+  const ready = all.filter((f) => f.status === "ready");
+  const sending = all.some((f) => f.status === "sending");
+  const writing = all.some((f) => f.status === "downloading");
+  if (fromSony.length) out.push(notice("warn", "alert", "<b>Your console is downloading straight from Sony.</b> That's the slow route. Pause the download on the console, then download the file on your PC."));
+  if (wrong.length) out.push(notice("bad", "alert", "<b>" + wrong.length + " file" + (wrong.length > 1 ? "s don't" : " doesn't") + " match Sony's size.</b> Delete " + (wrong.length > 1 ? "them" : "it") + " from the library folder and download again. psxdh won't send a wrong-sized file to the console."));
+  if (!fromSony.length && needed.length) out.push(notice("info", "info", "<b>Next:</b> press <b>Copy links</b>, paste them into your download manager, and save into the library folder."));
+  if (ready.length && !needed.length && !writing && !sending) out.push(notice("ok", "check", "<b>All files are ready.</b> Resume the download on your console. It will install from your PC."));
+  const key = out.map((n) => n.textContent).join("|");
+  if (box.dataset.key !== key) { box.dataset.key = key; box.replaceChildren(...out); }
+}
+
+function buildRow(f) {
+  const row = el("div", { class: "row", "data-key": f.key });
+  const name = el("div", { class: "name" },
+    el("b", { text: f.name, title: f.name }),
+    el("span", { class: "sub", "data-f": "sub" }),
+    el("div", { class: "bar", "data-f": "bar", role: "progressbar", "aria-label": "Progress for " + f.name, "aria-valuemin": "0", "aria-valuemax": "100" }, el("i")));
+  const badge = el("span", { class: "badge", "data-f": "badge" });
+  const btn = el("button", { class: "icon ghost", "aria-label": "Copy link for " + f.name, title: "Copy link" }, icon("copy"));
+  btn.addEventListener("click", async () => {
+    const cur = files().find((x) => x.key === f.key);
+    if (cur && await copy(cur.url, "Link copied")) flashCopied(btn);
+  });
+  row.append(name, badge, btn);
+  return row;
+}
+function updateRow(row, f) {
+  const size = f.size ? fmtBytes(f.size) : "size unknown";
+  let sub = (KIND[f.kind] || "Package") + (f.part >= 0 ? " · part " + f.part : "") + " · " + size;
+  let pct = 0;
+  switch (f.status) {
+    case "from-sony": pct = f.size ? f.sonyBytes / f.size : 0; sub += " · " + fmtBytes(f.sonyBytes) + " from Sony"; break;
+    case "downloading": pct = f.size ? f.localSize / f.size : 0; sub += " · " + fmtBytes(f.localSize) + " on PC"; break;
+    case "wrong-size": sub += " · PC copy is " + fmtBytes(f.localSize); break;
+    case "ready": pct = 1; break;
+    case "sending": case "sent": {
+      const got = Math.min(f.sentBytes + f.sonyBytes, f.size || Infinity);
+      pct = f.size ? got / f.size : 0; sub += " · console has " + fmtBytes(got); break;
+    }
+  }
+  pct = Math.max(0, Math.min(1, pct));
+  setText(row.querySelector('[data-f="sub"]'), sub);
+  const bar = row.querySelector('[data-f="bar"]');
+  bar.className = "bar b-" + f.status;
+  bar.hidden = f.status === "needed" || f.status === "wrong-size";
+  bar.setAttribute("aria-valuenow", String(Math.round(pct * 100)));
+  bar.firstChild.style.width = (pct * 100).toFixed(1) + "%";
+  const badge = row.querySelector('[data-f="badge"]');
+  badge.className = "badge s-" + f.status;
+  setText(badge, LABEL[f.status] || f.status);
+}
+
+function renderTitles() {
+  const box = $("titles");
+  const structure = state.titles.map((t) => t.id + ":" + t.files.map((f) => f.key).join(",")).join("|");
+  if (structure !== lastStructure) {
+    lastStructure = structure;
+    box.replaceChildren(...state.titles.map((t) => {
+      const card = el("div", { class: "title-card", "data-title": t.id });
+      card.append(el("div", { class: "title-head" }, el("h3", { text: t.id }), el("span", { class: "muted", "data-f": "count", style: "font-size:13px" })));
+      t.files.forEach((f) => card.append(buildRow(f)));
+      return card;
+    }));
+  }
+  state.titles.forEach((t) => {
+    const card = box.querySelector('[data-title="' + CSS.escape(t.id) + '"]');
+    if (!card) return;
+    const total = t.files.reduce((a, f) => a + (f.size || 0), 0);
+    const ready = t.files.filter((f) => ["ready", "sending", "sent"].includes(f.status)).length;
+    setText(card.querySelector('[data-f="count"]'), ready + " of " + t.files.length + " on PC" + (total ? " · " + fmtBytes(total) : ""));
+    t.files.forEach((f) => {
+      const row = card.querySelector('[data-key="' + CSS.escape(f.key) + '"]');
+      if (row) updateRow(row, f);
+    });
+  });
+  const any = state.titles.length > 0;
+  $("empty").hidden = any;
+  $("clear").hidden = !any;
+  $("save-into").hidden = !files().some((f) => needsDownload(f) || f.status === "downloading");
+  const need = files().filter(needsDownload).length;
+  const btn = $("copy-needed");
+  btn.hidden = need === 0;
+  setText(btn.querySelector("span"), "Copy " + need + " link" + (need > 1 ? "s" : ""));
+  $("save-txt").hidden = need === 0;
+}
+
+function renderLibrary() {
+  const list = $("lib"), files = state.library;
+  setText($("lib-count"), "· " + files.length + " file" + (files.length === 1 ? "" : "s"));
+  const key = files.map((f) => f.rel + f.state + f.size).join("|");
+  if (list.dataset.key === key) return;
+  list.dataset.key = key;
+  if (!files.length) { list.replaceChildren(el("li", { class: "muted", text: "The folder is empty." })); return; }
+  list.replaceChildren(...files.map((f) => el("li", {},
+    el("span", { class: "mono", text: f.rel }),
+    el("span", { class: "muted", text: fmtBytes(f.size) }),
+    el("span", { class: "badge " + (f.state === "ready" ? "s-ready" : "s-downloading"), text: f.state === "ready" ? "Complete" : "Still writing" }))));
+}
+
+async function refresh() {
+  try {
+    const r = await fetch("/api/state", { cache: "no-store" });
+    if (!r.ok) throw new Error(r.status);
+    state = await r.json();
+    $("offline").hidden = true;
+    renderHeader(); renderSteps(); renderNotices(); renderTitles(); renderLibrary();
+  } catch {
+    $("offline").hidden = false;
+  }
+}
+async function loop() {
+  await refresh();
+  setTimeout(loop, document.hidden ? 4000 : 1000);
+}
+
+$("setup").querySelector("summary").addEventListener("click", () => { setupTouched = true; });
+document.querySelectorAll("[data-copy-el]").forEach((b) => b.addEventListener("click", async () => {
+  if (await copy($(b.dataset.copyEl).textContent, "Folder path copied")) flashCopied(b);
+}));
+$("copy-needed").addEventListener("click", async () => {
+  const urls = files().filter(needsDownload).map((f) => f.url);
+  if (urls.length) await copy(urls.join("\n"), urls.length + " link" + (urls.length > 1 ? "s" : "") + " copied. Paste them into your download manager");
+});
+$("clear").addEventListener("click", async () => {
+  if (!confirm("Forget all captured links? Files in your library folder are not touched.")) return;
+  await fetch("/api/clear", { method: "POST" });
+  lastStructure = ""; refresh();
+});
+loop();
+</script>
+</body>
+</html>
