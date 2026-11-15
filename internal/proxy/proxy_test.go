@@ -191,6 +191,29 @@ func TestServesFromLibraryWithRange(t *testing.T) {
 	}
 }
 
+// A console resuming a download it began from Sony sends If-Range with
+// Sony's validator. The local copy must still answer with the range asked
+// for, never the whole file from byte 0.
+func TestResumeWithSonyIfRangeServesRange(t *testing.T) {
+	data := payload(5000)
+	h := newHarness(t, data)
+	h.addLibraryFile(t, pkgName, data)
+	for _, ir := range []string{`"sony-etag"`, "Mon, 02 Jan 2023 15:04:05 GMT"} {
+		req, _ := http.NewRequest(http.MethodGet, pkgURL, nil)
+		req.Header.Set("Range", "bytes=1000-")
+		req.Header.Set("If-Range", ir)
+		resp, err := h.client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusPartialContent || !bytes.Equal(body, data[1000:]) {
+			t.Errorf("If-Range %q: status %d, %d bytes; want 206 with bytes 1000-4999", ir, resp.StatusCode, len(body))
+		}
+	}
+}
+
 func TestHeadFromLibrary(t *testing.T) {
 	body := payload(300)
 	h := newHarness(t, body)

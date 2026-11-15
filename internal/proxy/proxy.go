@@ -211,6 +211,16 @@ func (s *Server) serveLocal(w http.ResponseWriter, r *http.Request, kind match.K
 			"file", f.Rel, "have", f.Size, "want", want)
 		return false
 	}
+	// A console resuming a download it started from Sony sends If-Range with
+	// Sony's ETag or Last-Modified. Neither matches the local copy, so
+	// ServeContent would ignore Range and send the whole file with a 200,
+	// which the console appends at its resume offset and then reports as
+	// corrupted. The file name (and size, when known) already ties this copy
+	// to Sony's, so honour the Range unconditionally.
+	if r.Header.Get("If-Range") != "" {
+		r = r.Clone(r.Context())
+		r.Header.Del("If-Range")
+	}
 	s.log.Info("serving from library", "file", f.Rel, "range", r.Header.Get("Range"))
 	cw := &countingWriter{ResponseWriter: w}
 	if key != "" {
