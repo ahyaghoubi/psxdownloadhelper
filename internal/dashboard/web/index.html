@@ -182,6 +182,8 @@ svg.i { width: 18px; height: 18px; flex: none; }
 .s-from-sony { background: var(--warn-soft); color: var(--warn); }
 .s-downloading { background: var(--info-soft); color: var(--info); }
 .s-wrong-size { background: var(--bad-soft); color: var(--bad); }
+.s-old-revision { background: var(--bad-soft); color: var(--bad); }
+.s-superseded { background: var(--surface-2); color: var(--muted); }
 .s-ready { background: var(--ok-soft); color: var(--ok); }
 .s-sending { background: var(--live-soft); color: var(--live); }
 .s-sent { background: var(--surface-2); color: var(--muted); }
@@ -335,6 +337,8 @@ const LABEL = {
   "from-sony": "From Sony (slow)",
   "downloading": "Downloading on PC",
   "wrong-size": "Wrong size",
+  "old-revision": "Old version on PC",
+  "superseded": "Replaced by newer",
   "ready": "Ready",
   "sending": "Installing",
   "sent": "Sent to console",
@@ -402,7 +406,7 @@ function flashCopied(btn) {
 
 // Files to download on the PC. Updates the console fetches itself are left out.
 function files() { return state ? state.titles.filter((t) => !t.update).flatMap((t) => t.files) : []; }
-const needsDownload = (f) => f.status === "needed" || f.status === "from-sony" || f.status === "wrong-size";
+const needsDownload = (f) => f.status === "needed" || f.status === "from-sony" || f.status === "wrong-size" || f.status === "old-revision";
 
 function renderHeader() {
   const c = state.console, pill = $("console");
@@ -463,12 +467,14 @@ function renderNotices() {
   const all = files(), box = $("notices"), out = [];
   const fromSony = all.filter((f) => f.status === "from-sony");
   const wrong = all.filter((f) => f.status === "wrong-size");
+  const stale = all.filter((f) => f.status === "old-revision");
   const needed = all.filter(needsDownload);
   const ready = all.filter((f) => f.status === "ready");
   const sending = all.some((f) => f.status === "sending");
   const writing = all.some((f) => f.status === "downloading");
   if (fromSony.length) out.push(notice("warn", "alert", "<b>Your console is downloading straight from Sony.</b> That's the slow route. Pause the download on the console and download the files on your PC instead."));
   if (wrong.length) out.push(notice("bad", "alert", "<b>" + wrong.length + " file" + (wrong.length > 1 ? "s don't" : " doesn't") + " match Sony's size.</b> Delete " + (wrong.length > 1 ? "them" : "it") + " from the library folder and download again. psxdh won't send a wrong-sized file to the console."));
+  if (stale.length) out.push(notice("bad", "alert", "<b>Sony has published a new version of " + (stale.length > 1 ? stale.length + " files" : "a file") + " you already have.</b> The copies on your PC are from the old version, and installing them would fail. Move " + (stale.length > 1 ? "them" : "it") + " out of the library folder and download the links again. psxdh won't send an old copy to the console."));
   const searching = state.titles.some((t) => t.finding);
   if (searching) out.push(notice("info", "info", "<b>Finding every part of the game…</b> psxdh is asking Sony which parts exist, so you can download them all now. This takes a few seconds."));
   else if (!fromSony.length && needed.length) out.push(notice("info", "info", "<b>Next:</b> press <b>Copy links</b>, paste them into your download manager, and save into the library folder. You can switch the console off meanwhile: psxdh remembers the links, even after a restart."));
@@ -500,6 +506,8 @@ function updateRow(row, f) {
     case "from-sony": pct = f.size ? f.sonyBytes / f.size : 0; sub += " · " + fmtBytes(f.sonyBytes) + " from Sony"; break;
     case "downloading": pct = f.size ? f.localSize / f.size : 0; sub += " · " + fmtBytes(f.localSize) + " on PC"; break;
     case "wrong-size": sub += " · PC copy is " + fmtBytes(f.localSize); break;
+    case "old-revision": sub += " · PC copy is from an older version"; break;
+    case "superseded": sub += " · Sony has a newer version; nothing to download"; break;
     case "ready": pct = 1; break;
     case "sending": case "sent": {
       const got = Math.min(f.sentBytes + f.sonyBytes, f.size || Infinity);
@@ -510,7 +518,7 @@ function updateRow(row, f) {
   setText(row.querySelector('[data-f="sub"]'), sub);
   const bar = row.querySelector('[data-f="bar"]');
   bar.className = "bar b-" + f.status;
-  bar.hidden = f.status === "needed" || f.status === "wrong-size";
+  bar.hidden = f.status === "needed" || f.status === "wrong-size" || f.status === "old-revision" || f.status === "superseded";
   bar.setAttribute("aria-valuenow", String(Math.round(pct * 100)));
   bar.firstChild.style.width = (pct * 100).toFixed(1) + "%";
   const badge = row.querySelector('[data-f="badge"]');

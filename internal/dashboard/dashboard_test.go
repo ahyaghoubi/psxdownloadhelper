@@ -259,3 +259,66 @@ func TestUpdatesAreLeftToTheConsole(t *testing.T) {
 		}
 	}
 }
+
+func TestRevisionStatuses(t *testing.T) {
+	const (
+		revOld = "d918060c4bd9613203567db42557b59e39928edd7c0aa20a129336913acd7ca8"
+		revNew = "93c83fd4af552ecdb7f28933d802efa3cd1714f7d87cbe3a04b4618118e63952"
+	)
+	base := "http://gst.prod.dl.playstation.net/gst/prod/00/PPSA01234_00/app/pkg/"
+	oldURL := base + "13/f_" + revOld + "/" + n0
+	newURL := base + "15/f_" + revNew + "/" + n0
+
+	dir := t.TempDir()
+	lib, err := library.New(dir, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := tracker.New()
+	h := New(Info{}, lib, tr)
+	see := func(raw string) {
+		u, _ := url.Parse(raw)
+		tr.Seen(u, match.KindPKGApp, match.Hint{TitleHint: "PPSA01234", PartIndex: 0})
+	}
+	see(oldURL)
+	p := filepath.Join(dir, n0)
+	_ = os.WriteFile(p, make([]byte, 10), 0o644)
+	old := time.Now().Add(-time.Minute)
+	_ = os.Chtimes(p, old, old)
+	lib.Scan()
+	time.Sleep(5 * time.Millisecond)
+	see(newURL)
+
+	statuses := func() map[string]Status {
+		out := map[string]Status{}
+		for _, ti := range h.Build().Titles {
+			for _, f := range ti.Files {
+				out[f.URL] = f.Status
+			}
+		}
+		return out
+	}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	need := func() string {
+		resp, _ := http.Get(srv.URL + "/api/urls.txt?need=1")
+		return strings.TrimSpace(readBody(t, resp))
+	}
+
+	if s := statuses(); s[newURL] != StatusOldRevision || s[oldURL] != StatusReady {
+		t.Fatalf("before re-download: %v", s)
+	}
+	if got := need(); got != newURL {
+		t.Fatalf("need list = %q, want only the new revision", got)
+	}
+
+	now := time.Now()
+	_ = os.Chtimes(p, now, now)
+	lib.Scan()
+	if s := statuses(); s[newURL] != StatusReady || s[oldURL] != StatusSuperseded {
+		t.Fatalf("after re-download: %v", s)
+	}
+	if got := need(); got != "" {
+		t.Fatalf("need list = %q: the old revision must not be offered", got)
+	}
+}

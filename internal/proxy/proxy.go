@@ -202,8 +202,16 @@ func (s *Server) serveLocal(w http.ResponseWriter, r *http.Request, kind match.K
 	if kind == match.KindUnknown && !strings.EqualFold(path.Ext(name), ".pkg") {
 		return false
 	}
-	f, ok := s.d.Library.Lookup(name)
+	// Sony publishes a new revision of a package under the same file names.
+	// Once a name has more than one revision, only a copy written while the
+	// requested revision was the newest can be that revision.
+	win := s.d.Tracker.Window(key)
+	f, ok := s.d.Library.LookupFunc(name, func(f library.File) bool { return win.Fits(f.ModTime) })
 	if !ok {
+		if old, had := s.d.Library.Lookup(name); had {
+			s.log.Warn("library file is from an older revision of this package; downloading from Sony instead",
+				"file", old.Rel, "modified", old.ModTime)
+		}
 		return false
 	}
 	if want := s.d.Tracker.Size(key); want > 0 && f.Size != want {

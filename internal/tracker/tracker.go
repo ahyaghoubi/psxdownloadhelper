@@ -14,7 +14,9 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -69,26 +71,128 @@ type Console struct {
 	LastSeen time.Time
 }
 
+// Rev is one revision of a file name on Sony's CDN.
+type Rev struct {
+	Hash      string    `json:"hash"` // the 64 hex digits after f_ in the URL path
+	FirstSeen time.Time `json:"firstSeen"`
+}
+
+// revRe matches the revision segment of a Sony CDN path. Every part of one
+// revision of a package shares it, and Sony publishes a new revision under
+// a new segment but the same file names. Short tokens are not revisions.
+var revRe = regexp.MustCompile(`(?i)/f_([0-9a-f]{64})/`)
+
+// Revision returns the revision hash in a URL path or tracking key, or "".
+func Revision(p string) string {
+	m := revRe.FindStringSubmatch(p)
+	if m == nil {
+		return ""
+	}
+	return strings.ToLower(m[1])
+}
+
+// Window is when a library file must have been last modified to belong to
+// the revision a request asks for. A zero bound is open.
+type Window struct {
+	From time.Time // this revision was first seen; zero for the oldest
+	To   time.Time // a newer revision was first seen; zero for the newest
+}
+
+// Fits reports whether a file modified at mod can belong to the revision.
+func (w Window) Fits(mod time.Time) bool {
+	if !w.From.IsZero() && mod.Before(w.From) {
+		return false
+	}
+	if !w.To.IsZero() && !mod.Before(w.To) {
+		return false
+	}
+	return true
+}
+
+// Superseded reports whether a newer revision of the file exists.
+func (w Window) Superseded() bool { return !w.To.IsZero() }
+
 // Tracker is safe for concurrent use.
 type Tracker struct {
 	mu       sync.Mutex
 	items    map[string]*Item
 	packages map[string]*Package
-	console  Console
-	finding  map[string]int // title -> part searches in progress
-	gen      uint64         // bumped by Clear; results of older searches are dropped
-	version  uint64         // bumped on every change worth saving
-	now      func() time.Time
+	// revisions lists every revision seen per file name, oldest first. It
+	// outlives Clear: forgetting that a file name had an older revision
+	// would let a stale library copy be served for the new one.
+	revisions map[string][]Rev
+	console   Console
+	finding   map[string]int // title -> part searches in progress
+	gen       uint64         // bumped by Clear; results of older searches are dropped
+	version   uint64         // bumped on every change worth saving
+	now       func() time.Time
 }
 
 // New returns an empty Tracker.
 func New() *Tracker {
 	return &Tracker{
-		items:    make(map[string]*Item),
-		packages: make(map[string]*Package),
-		finding:  make(map[string]int),
-		now:      time.Now,
+		items:     make(map[string]*Item),
+		packages:  make(map[string]*Package),
+		revisions: make(map[string][]Rev),
+		finding:   make(map[string]int),
+		now:       time.Now,
 	}
+}
+
+// noteRevision records that key's revision of name existed at seen. An
+// earlier sighting moves the revision's FirstSeen back. Callers hold t.mu.
+func (t *Tracker) noteRevision(name, key string, seen time.Time) {
+	h := Revision(key)
+	if h == "" || name == "" {
+		return
+	}
+	revs := t.revisions[name]
+	for i := range revs {
+		if revs[i].Hash == h {
+			if !seen.Before(revs[i].FirstSeen) {
+				return
+			}
+			revs[i].FirstSeen = seen
+			sort.SliceStable(revs, func(a, b int) bool { return revs[a].FirstSeen.Before(revs[b].FirstSeen) })
+			t.version++
+			return
+		}
+	}
+	revs = append(revs, Rev{Hash: h, FirstSeen: seen})
+	sort.SliceStable(revs, func(a, b int) bool { return revs[a].FirstSeen.Before(revs[b].FirstSeen) })
+	t.revisions[name] = revs
+	t.version++
+}
+
+// Window returns when a library copy of key's file must have been written
+// to belong to key's revision. While only one revision of the name is
+// known, or the URL carries no revision, any copy fits.
+func (t *Tracker) Window(key string) Window {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	it, ok := t.items[key]
+	if !ok {
+		return Window{}
+	}
+	h := Revision(key)
+	revs := t.revisions[it.Name]
+	if h == "" || len(revs) < 2 {
+		return Window{}
+	}
+	for i, r := range revs {
+		if r.Hash != h {
+			continue
+		}
+		var w Window
+		if i > 0 {
+			w.From = r.FirstSeen
+		}
+		if i+1 < len(revs) {
+			w.To = revs[i+1].FirstSeen
+		}
+		return w
+	}
+	return Window{}
 }
 
 // KeyOf returns the tracking key for u.
@@ -112,6 +216,7 @@ func (t *Tracker) Seen(u *url.URL, kind match.Kind, hint match.Hint) string {
 			FirstSeen: now,
 		}
 		t.items[key] = it
+		t.noteRevision(it.Name, key, now)
 	}
 	it.URL = u.String()
 	it.LastSeen = now
@@ -147,6 +252,7 @@ func (t *Tracker) Found(gen uint64, u *url.URL, kind match.Kind, title string, p
 		Key: key, URL: u.String(), Name: path.Base(u.Path), Package: parts.PackageName(path.Base(u.Path)), Kind: kind,
 		Title: title, Part: part, FirstSeen: now, LastSeen: now, Size: size,
 	}
+	t.noteRevision(path.Base(u.Path), key, now)
 	t.version++
 	return true
 }
@@ -305,7 +411,7 @@ func (t *Tracker) ConsoleSeen(remoteAddr string) {
 	t.console = Console{Addr: host, LastSeen: t.now()}
 }
 
-// Clear forgets every captured file.
+// Clear forgets every captured file. The revision history stays.
 func (t *Tracker) Clear() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -324,8 +430,9 @@ func (t *Tracker) Version() uint64 {
 }
 
 type savedState struct {
-	Items    []Item             `json:"items"`
-	Packages map[string]Package `json:"packages,omitempty"`
+	Items     []Item             `json:"items"`
+	Packages  map[string]Package `json:"packages,omitempty"`
+	Revisions map[string][]Rev   `json:"revisions,omitempty"`
 }
 
 // Save writes the captured files to path, so links survive a restart of
@@ -338,6 +445,12 @@ func (t *Tracker) Save(path string) error {
 	}
 	for k, v := range t.packages {
 		st.Packages[k] = *v
+	}
+	if len(t.revisions) > 0 {
+		st.Revisions = make(map[string][]Rev, len(t.revisions))
+		for k, v := range t.revisions {
+			st.Revisions[k] = append([]Rev(nil), v...)
+		}
 	}
 	t.mu.Unlock()
 	data, err := json.MarshalIndent(st, "", "  ")
@@ -378,6 +491,16 @@ func (t *Tracker) Load(path string) error {
 			it.Package = parts.PackageName(it.Name)
 		}
 		t.items[it.Key] = &it
+		// Links saved before revisions were kept still say when each
+		// revision was first seen.
+		t.noteRevision(it.Name, it.Key, it.FirstSeen)
+	}
+	for name, revs := range st.Revisions {
+		for _, r := range revs {
+			if r.Hash != "" {
+				t.noteRevision(name, "/f_"+r.Hash+"/", r.FirstSeen)
+			}
+		}
 	}
 	for k, v := range st.Packages {
 		p := v

@@ -1,8 +1,10 @@
 package tracker
 
 import (
+	"encoding/json"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -192,4 +194,116 @@ func TestClearDropsLateSearchResults(t *testing.T) {
 	if !tr.Found(tr.Generation(), u, match.KindPKGApp, "PPSA00001", 1, 10) {
 		t.Fatal("a search started after Clear should add parts")
 	}
+}
+
+const (
+	revOld = "d918060c4bd9613203567db42557b59e39928edd7c0aa20a129336913acd7ca8"
+	revNew = "93c83fd4af552ecdb7f28933d802efa3cd1714f7d87cbe3a04b4618118e63952"
+)
+
+func revURL(ver, rev string) string {
+	return "http://gst.prod.dl.playstation.net/gst/prod/00/PPSA01547_00/app/pkg/" + ver + "/f_" + rev +
+		"/EP1004-PPSA01547_00-GRANDTHEFTAUTO00_51.pkg"
+}
+
+func TestRevision(t *testing.T) {
+	if got := Revision(revURL("15", revNew)); got != revNew {
+		t.Errorf("Revision = %q", got)
+	}
+	if got := Revision("http://h/app/pkg/1/f_" + strings.ToUpper(revNew) + "/x_0.pkg"); got != revNew {
+		t.Errorf("upper-case hex: %q", got)
+	}
+	for _, p := range []string{"http://h/app/pkg/1/f_abc/x_0.pkg", "http://h/f_60d5/x.pkg", "http://h/x_0.pkg",
+		"http://h/f_" + revNew + "0/x.pkg"} {
+		if got := Revision(p); got != "" {
+			t.Errorf("Revision(%q) = %q, want none", p, got)
+		}
+	}
+}
+
+func TestWindowAcrossRevisions(t *testing.T) {
+	tr := New()
+	t0 := time.Date(2026, 11, 14, 13, 46, 0, 0, time.UTC)
+	t1 := time.Date(2026, 11, 15, 14, 25, 34, 0, time.UTC)
+	tr.now = func() time.Time { return t0 }
+	kOld := seen(tr, revURL("13", revOld), "PPSA01547", 51)
+	if w := tr.Window(kOld); w != (Window{}) || !w.Fits(t0.Add(-time.Hour)) {
+		t.Fatalf("one revision: any copy must fit, got %+v", w)
+	}
+
+	tr.now = func() time.Time { return t1 }
+	kNew := seen(tr, revURL("15", revNew), "PPSA01547", 51)
+	downloadedYesterday := t0.Add(2 * time.Hour)
+	if w := tr.Window(kNew); w.Fits(downloadedYesterday) || w.Superseded() {
+		t.Errorf("a copy written before the new revision appeared must not fit it: %+v", w)
+	}
+	if w := tr.Window(kOld); !w.Fits(downloadedYesterday) || !w.Superseded() {
+		t.Errorf("the copy belongs to the old revision: %+v", w)
+	}
+	// Written before either revision was captured: the oldest one.
+	if w := tr.Window(kOld); !w.Fits(t0.Add(-24 * time.Hour)) {
+		t.Error("oldest revision should accept copies written before it was captured")
+	}
+	redownloaded := t1.Add(time.Hour)
+	if w := tr.Window(kNew); !w.Fits(redownloaded) {
+		t.Error("a fresh download must fit the new revision")
+	}
+	if w := tr.Window(kOld); w.Fits(redownloaded) {
+		t.Error("a fresh download must not fit the old revision")
+	}
+
+	// Clear forgets the links but not that the name has two revisions.
+	tr.Clear()
+	tr.now = func() time.Time { return t1.Add(2 * time.Hour) }
+	kNew = seen(tr, revURL("15", revNew), "PPSA01547", 51)
+	if w := tr.Window(kNew); w.Fits(downloadedYesterday) {
+		t.Error("after Clear, an old copy must still not fit the new revision")
+	}
+}
+
+func TestRevisionsSavedAndRebuilt(t *testing.T) {
+	dir := t.TempDir()
+	t0 := time.Date(2026, 11, 14, 13, 46, 0, 0, time.UTC)
+	t1 := time.Date(2026, 11, 15, 14, 25, 34, 0, time.UTC)
+	a := New()
+	a.now = func() time.Time { return t0 }
+	seen(a, revURL("13", revOld), "PPSA01547", 51)
+	a.now = func() time.Time { return t1 }
+	seen(a, revURL("15", revNew), "PPSA01547", 51)
+	if err := a.Save(dir + "/links.json"); err != nil {
+		t.Fatal(err)
+	}
+
+	b := New()
+	if err := b.Load(dir + "/links.json"); err != nil {
+		t.Fatal(err)
+	}
+	kNew := KeyOf(mustURL(t, revURL("15", revNew)))
+	if w := b.Window(kNew); !w.From.Equal(t1) {
+		t.Errorf("loaded window = %+v", w)
+	}
+
+	// links.json written before revisions were saved: rebuilt from items.
+	data, _ := os.ReadFile(dir + "/links.json")
+	var st map[string]any
+	_ = json.Unmarshal(data, &st)
+	delete(st, "revisions")
+	data, _ = json.Marshal(st)
+	_ = os.WriteFile(dir+"/old.json", data, 0o600)
+	c := New()
+	if err := c.Load(dir + "/old.json"); err != nil {
+		t.Fatal(err)
+	}
+	if w := c.Window(kNew); !w.From.Equal(t1) {
+		t.Errorf("rebuilt window = %+v", w)
+	}
+}
+
+func mustURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u
 }

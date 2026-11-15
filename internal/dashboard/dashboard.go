@@ -3,7 +3,7 @@
 //	GET  /              the single-page dashboard
 //	GET  /api/state     everything the page shows, polled every second or so
 //	GET  /api/urls.txt  captured PKG URLs, one per line (?need=1: only ones
-//	                    not yet in the library)
+//	                    not yet in the library, or only in an older revision)
 //	POST /api/clear     forget captured URLs
 //	POST /api/mode      {"package": "...", "mode": "pc"|"console"|""}: who
 //	                    downloads a package
@@ -30,14 +30,16 @@ var webFS embed.FS
 type Status string
 
 const (
-	StatusNeeded      Status = "needed"      // not in the library yet
-	StatusFromSony    Status = "from-sony"   // console is downloading it from Sony right now
-	StatusDownloading Status = "downloading" // your download manager is writing it
-	StatusWrongSize   Status = "wrong-size"  // library copy doesn't match Sony's size
-	StatusReady       Status = "ready"       // in the library, waiting for the console
-	StatusSending     Status = "sending"     // console is installing it from the PC
-	StatusSent        Status = "sent"        // console has received the whole file
-	StatusConsole     Status = "console"     // an update: the console fetches it itself
+	StatusNeeded      Status = "needed"       // not in the library yet
+	StatusFromSony    Status = "from-sony"    // console is downloading it from Sony right now
+	StatusDownloading Status = "downloading"  // your download manager is writing it
+	StatusWrongSize   Status = "wrong-size"   // library copy doesn't match Sony's size
+	StatusOldRevision Status = "old-revision" // library copy predates this revision: download again
+	StatusSuperseded  Status = "superseded"   // Sony has a newer revision of this file: nothing to do
+	StatusReady       Status = "ready"        // in the library, waiting for the console
+	StatusSending     Status = "sending"      // console is installing it from the PC
+	StatusSent        Status = "sent"         // console has received the whole file
+	StatusConsole     Status = "console"      // an update: the console fetches it itself
 )
 
 // activeWindow is how recently bytes must have flowed to count as "now".
@@ -205,10 +207,30 @@ func (h *Handler) file(it tracker.Item, now time.Time) File {
 		Key: it.Key, Name: it.Name, URL: it.URL, Kind: string(it.Kind), Part: it.Part,
 		Size: it.Size, SentBytes: it.FromLibrary, SonyBytes: it.FromSony, Requested: it.Requested,
 	}
-	lf, inLibrary := h.lib.Find(it.Name)
+	win := h.tracker.Window(it.Key)
+	lf, inLibrary := h.lib.LookupFunc(it.Name, func(f library.File) bool { return win.Fits(f.ModTime) })
+	var stale library.File // a ready copy from another revision
+	hasStale := false
+	if !inLibrary {
+		for _, c := range h.lib.Files() {
+			if c.Name != it.Name {
+				continue
+			}
+			if c.State == library.StateWriting {
+				lf, inLibrary = c, true
+				break
+			}
+			if !hasStale || c.Size > stale.Size {
+				stale, hasStale = c, true
+			}
+		}
+	}
 	if inLibrary {
 		f.LocalSize = lf.Size
 		f.LibraryPath = lf.Rel
+	} else if hasStale && !win.Superseded() {
+		f.LocalSize = stale.Size
+		f.LibraryPath = stale.Rel
 	}
 	switch {
 	case inLibrary && lf.State == library.StateWriting:
@@ -230,6 +252,11 @@ func (h *Handler) file(it tracker.Item, now time.Time) File {
 		default:
 			f.Status = StatusReady
 		}
+	case win.Superseded():
+		// Downloading this would overwrite the newer revision's file.
+		f.Status = StatusSuperseded
+	case hasStale:
+		f.Status = StatusOldRevision
 	case it.FromSony > 0 && now.Sub(it.FromSonyAt) < activeWindow:
 		f.Status = StatusFromSony
 	default:
@@ -248,7 +275,7 @@ func (h *Handler) urls(w http.ResponseWriter, r *http.Request) {
 	var b strings.Builder
 	for _, t := range h.Build().Titles {
 		for _, f := range t.Files {
-			if onlyNeeded && f.Status != StatusNeeded && f.Status != StatusFromSony && f.Status != StatusWrongSize {
+			if onlyNeeded && f.Status != StatusNeeded && f.Status != StatusFromSony && f.Status != StatusWrongSize && f.Status != StatusOldRevision {
 				continue
 			}
 			b.WriteString(f.URL)

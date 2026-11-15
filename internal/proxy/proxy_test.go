@@ -484,3 +484,49 @@ func TestRangeStart(t *testing.T) {
 		}
 	}
 }
+
+// Sony republished a package under the same file names (CE-107928-7). A copy
+// downloaded for the old revision must not be sent for the new one, but must
+// still serve the old revision, and a fresh download serves the new one.
+func TestOldRevisionNotServedForNewRevision(t *testing.T) {
+	const (
+		revOld = "d918060c4bd9613203567db42557b59e39928edd7c0aa20a129336913acd7ca8"
+		revNew = "93c83fd4af552ecdb7f28933d802efa3cd1714f7d87cbe3a04b4618118e63952"
+	)
+	base := "http://gst.prod.dl.playstation.net/gst/prod/00/PPSA01234_00/app/pkg/"
+	oldURL := base + "13/f_" + revOld + "/" + pkgName
+	newURL := base + "15/f_" + revNew + "/" + pkgName
+
+	oldBody, newBody := payload(5000), bytes.Repeat([]byte{9}, 5000) // same size, different bytes
+	h := newHarness(t, newBody)
+	h.addLibraryFile(t, pkgName, oldBody)
+
+	// One revision known: the file already in the library is served.
+	if _, got := h.get(t, oldURL, ""); !bytes.Equal(got, oldBody) {
+		t.Fatal("single revision: library copy should be served")
+	}
+	// The console asks for the new revision: go to Sony, not the old copy.
+	if _, got := h.get(t, newURL, "bytes=0-99"); !bytes.Equal(got, newBody[:100]) {
+		t.Fatal("old copy was served for the new revision")
+	}
+	if h.sony.hits.Load() != 1 {
+		t.Fatalf("Sony hits = %d, want 1", h.sony.hits.Load())
+	}
+	// The old revision is still served from the old copy.
+	if _, got := h.get(t, oldURL, ""); !bytes.Equal(got, oldBody) {
+		t.Fatal("old revision should still be served from its copy")
+	}
+
+	// The user downloads the new revision over the old file.
+	p := filepath.Join(h.libDir, pkgName)
+	if err := os.WriteFile(p, newBody, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	_ = os.Chtimes(p, now, now)
+	h.lib.Scan()
+	hits := h.sony.hits.Load()
+	if _, got := h.get(t, newURL, ""); !bytes.Equal(got, newBody) || h.sony.hits.Load() != hits {
+		t.Fatal("fresh download should be served from the library")
+	}
+}

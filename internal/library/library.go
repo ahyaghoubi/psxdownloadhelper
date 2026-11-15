@@ -158,10 +158,16 @@ func (l *Library) Files() []File {
 // share the name (copies in different subfolders) the largest wins, then the
 // shortest path, so the result is deterministic.
 func (l *Library) Lookup(name string) (File, bool) {
+	return l.LookupFunc(name, nil)
+}
+
+// LookupFunc is Lookup restricted to the ready files accept approves. A nil
+// accept approves every file.
+func (l *Library) LookupFunc(name string, accept func(File) bool) (File, bool) {
 	var best File
 	found := false
 	for _, f := range l.Files() {
-		if f.State != StateReady || f.Name != name {
+		if f.State != StateReady || f.Name != name || (accept != nil && !accept(f)) {
 			continue
 		}
 		if !found || f.Size > best.Size || (f.Size == best.Size && len(f.Path) < len(best.Path)) {
